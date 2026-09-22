@@ -1,0 +1,59 @@
+{
+  // ==========================================================================
+  //  项目级 VS Code 配置（随 Git 提交，供所有维护者共享）
+  //  打开方式：VS Code → 文件 → 打开文件夹 → 选择 D:\hazard-ledger-lan
+  // ==========================================================================
+
+  // ---------- 编码与格式 ----------
+  "files.encoding": "utf8",              // 本项目全部文件为 UTF-8（含中文注释）
+  "files.eol": "\n",                     // 代码统一 LF 换行；.bat 脚本由 VS Code 按 bat 类型处理
+  "editor.tabSize": 2,                   // 本项目统一 2 空格缩进
+  "editor.insertSpaces": true,
+  "editor.rulers": [120],                // 120 列参考线
+  "files.trimTrailingWhitespace": true,  // 保存时去掉行尾空格
+  "files.insertFinalNewline": true,      // 保存时补一个文件末尾换行
+  "editor.formatOnSave": false,          // 不自动格式化（避免大范围无关改动）
+
+  // ---------- ★重要★ 排除数据目录 ----------
+  // pgdata 里是 PostgreSQL 数据文件（上万个碎片文件），
+  // 不排除会导致：VS Code 卡顿、文件监听器报 "ENOSPC"、搜索变慢。
+  "files.exclude": {
+    "**/node_modules": true,
+    "pgdata": true,
+    "backup": true
+  },
+  "search.exclude": {
+    "node_modules": true,
+    "pgdata": true,
+    "backup": true,
+    "uploads": true,
+    "**/*.log": true,
+    "package-lock.json": true
+  },
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/pgdata/**": true,
+    "**/backup/**": true,
+    "**/uploads/**": true,
+    "**/*.log": true
+  },
+
+  // ---------- 语法与显示 ----------
+  "files.associations": {
+    "*.bat": "bat",                      // .bat 高亮为批处理
+    "*.md": "markdown"
+  },
+  "explorer.fileNesting.enabled": true,  // 相关文件折叠在一起，目录更清爽
+  "explorer.fileNesting.patterns": {
+    "package.json": "package-lock.json, .gitignore, config.example.json",
+    "server.js": "config.json",
+    "README.md": "维护手册.md, 环境复现要求报告.md"
+  },
+
+  // ---------- 内置终端 ----------
+  "terminal.integrated.defaultProfile.windows": "Command Prompt",
+
+  // ---------- Git ----------
+  "git.enableSmartCommit": true,         // 没有暂存内容时提交会自动全选
+  "git.confirmSync": false
+}

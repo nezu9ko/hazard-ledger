@@ -1,0 +1,8 @@
+node_modules/
+config.json
+*.log
+*.txt
+reset-db-password.bat
+pgdata/
+backup/
+uploads/

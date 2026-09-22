@@ -1,0 +1,9 @@
+{
+  // 打开本项目时 VS Code 会提示安装这些扩展（点「安装」即可）
+  "recommendations": [
+    "ms-ceintl.vscode-language-pack-zh-hans",   // 中文界面（已预装）
+    "esbenp.prettier-vscode",                    // 代码格式化（可选）
+    "mtxr.sqltools",                             // 写 SQL 有提示与结果表格
+    "mtxr.sqltools-driver-pg"                    // SQLTools 的 PostgreSQL 驱动
+  ]
+}

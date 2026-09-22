@@ -1,0 +1,14 @@
+{
+  "_说明": "复制本文件为 config.json 并填入实际值；config.json 已被 .gitignore 排除，不会进入版本库",
+  "port": 3000,
+  "host": "0.0.0.0",
+  "_companyName说明": "公司名称，显示在侧边栏与登录页；留空则不显示",
+  "companyName": "在此填写公司名称",
+  "db": {
+    "host": "127.0.0.1",
+    "port": 5432,
+    "user": "postgres",
+    "password": "在此填写数据库密码",
+    "database": "hazard_ledger"
+  }
+}

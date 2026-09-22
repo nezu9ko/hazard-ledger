@@ -1,0 +1,21 @@
+{
+  // ==========================================================================
+  //  调试配置
+  //  ⚠️ 使用前提：先停掉后台服务，否则 3000 端口被占用会报 EADDRINUSE
+  //     以管理员运行：schtasks /End /TN HazardLedger
+  //     调试完记得恢复：schtasks /Run /TN HazardLedger
+  // ==========================================================================
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "调试 server.js（需先停掉后台服务）",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/server.js",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "skipFiles": ["<node_internals>/**"],
+      "env": { "NODE_ENV": "development" }
+    }
+  ]
+}
