@@ -101,31 +101,66 @@ function compressImage(file, maxSide = 1600, quality = 0.82) {
   });
 }
 
-// 照片上传控件：选择即上传，返回 state.urls
+/* ---------- 附件（图片 + PDF / Word / Excel）上传与展示 ----------
+ * 存储结构：后端为 [{ u: "/uploads/xxx.pdf", n: "整改方案.pdf" }]，
+ *           前端控件内部用 [{ url, name }]，提交时转成 { u, n }。
+ * 图片按扩展名渲染成缩略图，文档渲染成文件卡片（点击新窗口打开）。
+ */
+
+/** 文档 MIME 白名单（与服务端 UPLOAD_TYPES 保持一致） */
+const DOC_TYPES = [
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+];
+
+/** 附件是否是图片（存储文件名保留了原扩展名，可按后缀判断） */
+const isImageUrl = (u) => /\.(jpe?g|png|webp|gif)$/i.test(String(u || ""));
+
+/** 取扩展名（小写、不含点）："/uploads/ab12.pdf" → "pdf" */
+const extOf = (u) => (String(u || "").match(/\.([A-Za-z0-9]+)$/) || ["", ""])[1].toLowerCase();
+
+/** File → dataURL（文档原样读取，不做压缩） */
+function readAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result);
+    fr.onerror = () => reject(new Error("文件读取失败"));
+    fr.readAsDataURL(file);
+  });
+}
+
+// 附件上传控件：选择即上传，返回 state（含 payload() 供提交）
 function photoUploaderHtml(key, label, hint) {
   return `<div class="field span-2">
     <label>${esc(label)}</label>
     <div class="photo-grid" id="${key}Grid"></div>
     <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
-      <button type="button" class="btn btn-outline btn-sm" id="${key}Btn">${icon("plus", 14)}选择照片</button>
+      <button type="button" class="btn btn-outline btn-sm" id="${key}Btn">${icon("plus", 14)}选择附件</button>
       <span style="font-size:12px;color:#9ca3af">${esc(hint)}</span>
     </div>
-    <input type="file" accept="image/*" multiple id="${key}Input" style="display:none">
+    <input type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" multiple id="${key}Input" style="display:none">
   </div>`;
 }
 
 function initPhotoUploader(key) {
-  const state = { urls: [] };
+  const state = { items: [] };
   const grid = $("#" + key + "Grid");
   const input = $("#" + key + "Input");
   const btn = $("#" + key + "Btn");
 
   const render = () => {
-    grid.innerHTML = state.urls.length
-      ? state.urls.map((u, i) => `<div class="photo-item"><img src="${esc(u)}" alt="" data-preview="${esc(u)}"><button type="button" class="photo-del" data-i="${i}" title="移除">×</button></div>`).join("")
-      : `<span style="font-size:12px;color:#cbd5e1">暂无照片</span>`;
+    grid.innerHTML = state.items.length
+      ? state.items.map((it, i) => (isImageUrl(it.url)
+        ? `<div class="photo-item"><img src="${esc(it.url)}" alt="" data-preview="${esc(it.url)}"><button type="button" class="photo-del" data-i="${i}" title="移除">×</button></div>`
+        : `<div class="photo-item doc" data-doc="${esc(it.url)}" title="${esc(it.name || "点击打开")}"><span class="doc-ext">${esc(extOf(it.url).toUpperCase())}</span><button type="button" class="photo-del" data-i="${i}" title="移除">×</button></div>`
+      )).join("")
+      : `<span style="font-size:12px;color:#cbd5e1">暂无附件</span>`;
+    // 文档卡片由全局 click 监听统一处理（见文件末尾 data-doc 分支），此处只绑删除
     grid.querySelectorAll(".photo-del").forEach((b) => {
-      b.onclick = (e) => { e.stopPropagation(); state.urls.splice(Number(b.dataset.i), 1); render(); };
+      b.onclick = (e) => { e.stopPropagation(); state.items.splice(Number(b.dataset.i), 1); render(); };
     });
   };
 
@@ -134,31 +169,45 @@ function initPhotoUploader(key) {
     const files = [...input.files];
     input.value = "";
     for (const f of files) {
-      if (!f.type.startsWith("image/")) { toast("已跳过非图片文件", f.name, "err"); continue; }
-      if (state.urls.length >= MAX_PHOTOS) { toast(`最多 ${MAX_PHOTOS} 张`, "请先移除部分照片", "err"); break; }
+      const isImg = f.type.startsWith("image/");
+      if (!isImg && !DOC_TYPES.includes(f.type)) {
+        toast("不支持的文件类型", `${f.name}（仅支持图片、PDF、Word、Excel）`, "err");
+        continue;
+      }
+      const limit = isImg ? 8 : 20;   // 与服务端上限一致：图片 8MB / 文档 20MB
+      if (f.size > limit * 1024 * 1024) { toast("文件过大", `${f.name} 超过 ${limit}MB`, "err"); continue; }
+      if (state.items.length >= MAX_PHOTOS) { toast(`最多 ${MAX_PHOTOS} 个附件`, "请先移除部分附件", "err"); break; }
       btn.disabled = true; btn.textContent = "上传中...";
       try {
-        const dataUrl = await compressImage(f);
+        // 图片先压缩；文档原样读取（不压缩）
+        const dataUrl = isImg ? await compressImage(f) : await readAsDataUrl(f);
         const r = await api.post("/upload", { name: f.name, dataUrl });
-        state.urls.push(r.url);
+        state.items.push({ url: r.url, name: f.name });
         render();
       } catch (err) {
         toast("上传失败", err.message, "err");
       } finally {
-        btn.disabled = false; btn.innerHTML = `${icon("plus", 14)}选择照片`;
+        btn.disabled = false; btn.innerHTML = `${icon("plus", 14)}选择附件`;
       }
     }
   };
   render();
+  /** 提交给后端时转成 { u, n } 结构 */
+  state.payload = () => state.items.map((it) => ({ u: it.url, n: it.name }));
   return state;
 }
 
-// 详情页照片展示
+/** 详情页附件展示（兼容旧数据里的纯字符串） */
 function photoViewer(label, urls) {
-  const list = Array.isArray(urls) ? urls : [];
+  const list = (Array.isArray(urls) ? urls : [])
+    .map((x) => (typeof x === "string" ? { u: x, n: "" } : { u: x && x.u, n: (x && x.n) || "" }))
+    .filter((a) => a.u);
   return `<div class="info-item full"><div class="i-label">${esc(label)}</div>
     <div class="i-value">${list.length
-      ? `<div class="photo-grid">${list.map((u) => `<div class="photo-item"><img src="${esc(u)}" alt="" data-preview="${esc(u)}"></div>`).join("")}</div>`
+      ? `<div class="photo-grid">${list.map((a) => (isImageUrl(a.u)
+        ? `<div class="photo-item"><img src="${esc(a.u)}" alt="" data-preview="${esc(a.u)}"></div>`
+        : `<div class="photo-item doc" data-doc="${esc(a.u)}" title="${esc(a.n || "点击打开")}"><span class="doc-ext">${esc(extOf(a.u).toUpperCase())}</span></div>`
+      )).join("")}</div>`
       : "—"}</div></div>`;
 }
 
@@ -745,6 +794,32 @@ function gotoLedger(statusFilter) {
  * 预设条件再进入本页；renderHazardList 会把 listState 回填到筛控件上。
  * 表格整体可点击进详情；行内「删除」按钮做了事件隔离（见 loadList）。
  */
+/**
+ * 导出隐患台账。
+ * @param ids 传 id 数组时只导出这些记录（供台账页「导出选中」使用）；
+ *            传 null 时按 listState 里的当前筛选条件导出全部。
+ */
+async function exportHazards(ids) {
+  const qs = new URLSearchParams({ format: "xlsx" });
+  if (ids && ids.length) qs.set("ids", ids.join(","));
+  else ["level", "category", "status", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
+  const res = await fetch(`/api/export?${qs.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      "X-Operator-Id": session?.user?.id || "",
+      "X-Operator": encodeURIComponent(session?.user?.userName || ""),
+      "X-Operator-Role": session?.user?.role || "",
+    },
+  });
+  if (!res.ok) throw new Error("导出失败");
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `隐患台账_${todayStr()}${ids && ids.length ? `_选中${ids.length}条` : ""}.xlsx`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
 async function renderHazardList() {
   $("#app").innerHTML = layout("hazards", `
     <div class="page">
@@ -799,25 +874,7 @@ async function renderHazardList() {
     const old = btn.innerHTML;
     btn.textContent = "导出中...";
     try {
-      const qs = new URLSearchParams({ format: "xlsx" });
-      ["level", "category", "status", "dateFrom", "dateTo", "keyword"].forEach((k) => {
-        if (listState[k]) qs.set(k, listState[k]);
-      });
-      const res = await fetch(`/api/export?${qs.toString()}`, {
-        headers: {
-          Authorization: `Bearer ${session.token}`,
-          "X-Operator-Id": session?.user?.id || "",
-          "X-Operator": encodeURIComponent(session?.user?.userName || ""),
-          "X-Operator-Role": session?.user?.role || "",
-        },
-      });
-      if (!res.ok) throw new Error("导出失败");
-      const blob = await res.blob();
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `隐患台账_${todayStr()}.xlsx`;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      await exportHazards(null);
       toast("导出成功", "已按当前筛选条件导出");
     } catch (err) {
       toast("导出失败", err.message, "err");
@@ -852,7 +909,9 @@ async function loadList() {
   catch (err) { card.innerHTML = `<div class="empty"><div class="e-title">加载失败</div><div class="e-sub">${esc(err.message)}</div></div>`; return; }
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.pageSize));
+  const canDel = isAdmin() || currentUser()?.role === "safety_admin";
   const rows = data.items.map((h) => `<tr class="${h.status === "overdue" ? "overdue" : ""}" data-view="${h.id}" title="点击查看详情">
+      ${canDel ? `<td class="pick"><input type="checkbox" class="row-pick" data-id="${h.id}" data-code="${esc(h.hazardCode)}"></td>` : ""}
       <td class="code">${esc(h.hazardCode)}</td>
       <td>${esc(h.inspectDate)}</td>
       <td>${esc(h.location)}</td>
@@ -868,8 +927,15 @@ async function loadList() {
   card.innerHTML = data.items.length === 0
     ? `<div class="empty">${icon("search", 40)}<div class="e-title">暂无数据</div><div class="e-sub">没有找到符合条件的隐患记录</div></div>`
     : `<div class="scroll-hint">← 左右滑动查看完整表格 →</div>
+      ${canDel ? `<div class="batch-bar" id="batchBar" hidden>
+        <span class="batch-info" id="batchInfo">已选 0 条</span>
+        <button class="btn btn-outline btn-sm" id="batchExport">导出选中</button>
+        <button class="btn btn-danger btn-sm" id="batchDelete">批量删除</button>
+        <button class="btn btn-outline btn-sm" id="batchClear">取消选择</button>
+      </div>` : ""}
       <div class="table-wrap"><table class="tbl">
         <thead><tr>
+          ${canDel ? `<th class="pick"><input type="checkbox" id="pickAll" title="全选本页"></th>` : ""}
           <th>隐患编号</th><th>排查日期</th><th>所在部位</th><th>隐患描述</th><th>类别</th>
           <th>等级</th><th>状态</th><th>整改责任人</th><th>计划完成时限</th><th>操作</th>
         </tr></thead>
@@ -885,6 +951,55 @@ async function loadList() {
           <button class="icon-btn" id="nextBtn" ${listState.page >= totalPages ? "disabled" : ""}>${icon("chevronRight", 15)}</button>
         </div>
       </div>`;
+
+  // 批量选择（仅安全管理员/系统管理员可见复选框）
+  if (canDel) {
+    const bar = $("#batchBar", card);
+    const picks = () => [...card.querySelectorAll(".row-pick")];
+    const selected = () => picks().filter((c) => c.checked).map((c) => ({ id: c.dataset.id, code: c.dataset.code }));
+    const sync = () => {
+      const sel = selected();
+      $("#batchInfo", card).textContent = `已选 ${sel.length} 条`;
+      bar.hidden = sel.length === 0;
+      const all = $("#pickAll", card);
+      if (all) all.checked = picks().length > 0 && sel.length === picks().length;
+    };
+    picks().forEach((c) => {
+      c.onclick = (e) => e.stopPropagation();   // 别触发"整行进详情"
+      c.onchange = sync;
+    });
+    const allBox = $("#pickAll", card);
+    if (allBox) allBox.onchange = () => { picks().forEach((c) => { c.checked = allBox.checked; }); sync(); };
+    $("#batchClear", card).onclick = () => { picks().forEach((c) => { c.checked = false; }); sync(); };
+
+    $("#batchExport", card).onclick = async () => {
+      const sel = selected();
+      if (!sel.length) return;
+      const btn = $("#batchExport", card);
+      btn.disabled = true;
+      try {
+        await exportHazards(sel.map((s) => s.id));
+        toast("导出成功", `已导出选中的 ${sel.length} 条`);
+      } catch (err) { toast("导出失败", err.message, "err"); }
+      finally { btn.disabled = false; }
+    };
+
+    $("#batchDelete", card).onclick = () => {
+      const sel = selected();
+      if (!sel.length) return;
+      const preview = sel.slice(0, 5).map((s) => s.code).join("、");
+      openModal({
+        title: `确认批量删除 ${sel.length} 条隐患`,
+        desc: `编号：${preview}${sel.length > 5 ? ` 等 ${sel.length} 条` : ""}。删除后不可撤销，请确认。`,
+        confirmText: `删除 ${sel.length} 条`, danger: true,
+        onConfirm: async () => {
+          await api.post("/hazards", { action: "batch-delete", ids: sel.map((s) => s.id) });
+          toast("已删除", `共删除 ${sel.length} 条隐患`);
+          loadList();
+        },
+      });
+    };
+  }
 
   // 整行点击 → 进入详情（删除按钮除外）
   card.querySelectorAll("tr[data-view]").forEach((tr) => {
@@ -1150,8 +1265,8 @@ function renderHazardNew() {
       rectifyMeasure: get("rectifyMeasure").trim(), rectifyPerson: get("rectifyPerson").trim(),
       rectifyFund: get("rectifyFund"), planDeadline: get("planDeadline"),
       emergencyPlan: get("emergencyPlan").trim() || undefined,
-      hazardPhotos: hazardPhotos.urls,
-      rectifyPhotos: rectifyPhotos.urls,
+      hazardPhotos: hazardPhotos.payload(),
+      rectifyPhotos: rectifyPhotos.payload(),
     };
     for (const [k, label] of [["inspectDate", "排查日期"], ["inspector", "排查人员"], ["location", "隐患所在部位"], ["description", "隐患描述"], ["category", "隐患类别"], ["level", "隐患等级"], ["rectifyMeasure", "整改措施"], ["rectifyPerson", "整改责任人"], ["rectifyFund", "整改资金"], ["planDeadline", "计划完成时限"]]) {
       if (!payload[k]) { errEl.textContent = `请填写${label}`; errEl.style.display = "block"; return; }
@@ -1674,10 +1789,12 @@ function router() {
 
   window.addEventListener("hashchange", router);
   window.addEventListener("DOMContentLoaded", async () => {
-    // 点击任意缩略图 → 新窗口放大查看
+    // 点击缩略图 → 新窗口看大图；点击文档卡片 → 新窗口打开文档
     document.addEventListener("click", (e) => {
       const im = e.target.closest("[data-preview]");
-      if (im) { e.preventDefault(); window.open(im.getAttribute("data-preview"), "_blank"); }
+      if (im) { e.preventDefault(); window.open(im.getAttribute("data-preview"), "_blank"); return; }
+      const dc = e.target.closest("[data-doc]");
+      if (dc) { e.preventDefault(); window.open(dc.getAttribute("data-doc"), "_blank"); }
     });
     // 先取公司名等信息，再渲染，避免侧边栏/登录页出现"先空后跳"
     await loadAppInfo();

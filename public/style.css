@@ -271,6 +271,19 @@ a { color: var(--primary); text-decoration: none; }
 /* ---------- 表格 ---------- */
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .scroll-hint { display: none; }
+
+/* 台账表格：批量选择列 + 批量操作栏（仅安全管理员/系统管理员可见） */
+.tbl th.pick, .tbl td.pick { width: 40px; text-align: center; padding-left: 6px; padding-right: 6px; }
+.tbl td.pick input, .tbl th.pick input { width: 16px; height: 16px; cursor: pointer; vertical-align: middle; }
+.batch-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; margin-bottom: 10px;
+  background: var(--primary-50); border: 1px solid #bfdbfe; border-radius: 8px;
+}
+.batch-bar .batch-info { font-size: 13px; font-weight: 500; color: var(--primary); margin-right: auto; }
+/* ⚠️ 必须显式处理：上面的 display:flex 会覆盖 HTML 的 hidden 属性，
+   不加这条会导至「未选中时批量栏仍然显示」 */
+.batch-bar[hidden] { display: none; }
 table.tbl { width: 100%; border-collapse: collapse; min-width: 1040px; font-size: 13.5px; }
 .tbl thead th {
   text-align: left; font-weight: 500; font-size: 12px; color: var(--text-muted);
@@ -363,6 +376,15 @@ table.tbl { width: 100%; border-collapse: collapse; min-width: 1040px; font-size
 .photo-item { position: relative; width: 104px; height: 104px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: #f8fafc; }
 .photo-item img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; transition: transform .15s; }
 .photo-item img:hover { transform: scale(1.06); }
+/* 文档附件：无法生成缩略图，显示成"文件卡片"（扩展名 + 点击打开） */
+.photo-item.doc {
+  display: flex; align-items: center; justify-content: center;
+  background: #eff6ff; border-color: #bfdbfe; cursor: pointer;
+}
+.photo-item.doc:hover { background: #dbeafe; }
+.photo-item.doc .doc-ext {
+  font-size: 15px; font-weight: 600; letter-spacing: .5px; color: var(--primary);
+}
 .photo-del {
   position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; line-height: 18px;
   border: none; border-radius: 50%; background: rgba(15, 23, 42, .62); color: #fff;

@@ -113,6 +113,16 @@ function localDateStr(d = new Date()) {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+/**
+ * 校验 YYYY-MM-DD 是否为**真实存在**的日期。
+ * 只做正则是不够的：2026-02-30、2026-13-01 都能通过正则，但不是有效日期。
+ */
+function isRealDate(s) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const [y, m, d] = s.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
+}
 /** 相对今天偏移 N 天的本地日期（仅演示数据使用） */
 function shiftDate(days) {
   const d = new Date();
@@ -153,43 +163,102 @@ function readBody(req, maxBytes = 2 * 1024 * 1024) {
 /* ---------------- 领域模型（数据库行 ↔ 前端 JSON） ---------------- */
 
 /**
- * 解析数据库里存的照片字段（TEXT，内容为 JSON 数组字符串）。
+ * 解析数据库里存的附件字段（TEXT，内容为 JSON 数组字符串）。
+ * **向后兼容**两种元素形态，统一输出 [{ u, n }]（u=路径，n=原文件名）：
+ *   · 旧版：纯字符串            "/uploads/xxx.jpg"
+ *   · 新版：对象                { "u": "/uploads/xxx.pdf", "n": "整改方案.pdf" }
  * 只保留形如 /uploads/xxx 的本站路径，其余（外链、路径穿越等）一律丢弃。
  */
 function parsePhotos(raw) {
   if (!raw) return [];
   try {
     const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && /^\/uploads\/[A-Za-z0-9._-]+$/.test(x)) : [];
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (const x of arr) {
+      const u = typeof x === "string" ? x : (x && typeof x.u === "string" ? x.u : null);
+      if (!u || !/^\/uploads\/[A-Za-z0-9._-]+$/.test(u)) continue;
+      const n = (x && typeof x === "object" && typeof x.n === "string") ? x.n.slice(0, 120) : "";
+      out.push({ u, n });
+    }
+    return out;
   } catch { return []; }
 }
 
 /**
- * 校验并归一化「前端提交的照片数组」：白名单前缀 + 去重 + 上限张数。
- * 这是防止"外链图片/路径注入"写入数据库的关键闸门。
- * @param max 每个字段最多保留的张数（默认 6）
+ * 校验并归一化「前端提交的附件数组」：白名单路径 + 去重 + 上限个数。
+ * 这是防止"外链文件/路径注入"写入数据库的关键闸门。
+ * @param max 每个字段最多保留的个数（默认 6）
  */
 function normalizePhotos(input, max = 6) {
   if (!Array.isArray(input)) return [];
   const out = [];
   for (const x of input) {
-    if (typeof x !== "string") continue;
-    if (!/^\/uploads\/[A-Za-z0-9._-]+$/.test(x)) continue;
-    if (!out.includes(x)) out.push(x);
+    const u = typeof x === "string" ? x : (x && typeof x.u === "string" ? x.u : null);
+    if (!u || !/^\/uploads\/[A-Za-z0-9._-]+$/.test(u)) continue;
+    // 原文件名：只保留可打印字符、去尖括号（防注入）、限长
+    let n = "";
+    if (x && typeof x === "object" && typeof x.n === "string") {
+      n = x.n.replace(/[\u0000-\u001f<>]/g, "").trim().slice(0, 120);
+    }
+    if (!out.some((o) => o.u === u)) out.push({ u, n });
     if (out.length >= max) break;
   }
   return out;
 }
 
 /**
- * 状态筛选匹配。
- * 支持伪状态 `unclosed`（未闭环 = 非 closed）——看板"未闭环数"点击跳转时使用。
- * 其余状态与 hazards.status 精确匹配。
+ * 数据库行 → 前端隐患对象（camelCase）。
+ *
+ * 设计要点：把「逾期」「未闭环」这两个**派生状态**直接翻译成 SQL 条件，
+ * 从而让筛选与分页都下推到数据库执行 —— 数据量再大也不会把全表读进内存。
+ *   未闭环 → status <> 'closed'
+ *   逾期   → status <> 'closed' AND plan_deadline < 今天
+ * 这与 rowToHazard() 的派生逻辑保持一致（列表状态、筛选、统计三处同口径）。
+ *
+ * @returns {{ where: string, params: any[] }} where 恒不为空（无条件时为 "TRUE"）
  */
-function matchStatus(h, status) {
-  if (!status) return true;
-  if (status === "unclosed") return h.status !== "closed";
-  return h.status === status;
+function buildHazardWhere(q, today) {
+  const conds = [];
+  const params = [];
+  /** 追加一个条件；sql 中的 ? 会被自动替换为对应的 $n 占位符 */
+  const add = (sql, val) => {
+    params.push(val);
+    conds.push(sql.replace("?", `$${params.length}`));
+  };
+
+  const level = q.get("level");
+  if (level) add("level = ?", level);
+
+  const category = q.get("category");
+  if (category) add("category = ?", category);
+
+  const status = q.get("status");
+  if (status === "unclosed") conds.push("status <> 'closed'");
+  else if (status === "overdue") add("(status <> 'closed' AND plan_deadline < ?)", today);
+  else if (status) add("status = ?", status);
+
+  const dateFrom = q.get("dateFrom");
+  if (dateFrom) add("inspect_date >= ?", dateFrom);
+  const dateTo = q.get("dateTo");
+  if (dateTo) add("inspect_date <= ?", dateTo);
+
+  const keyword = (q.get("keyword") || "").trim();
+  if (keyword) {
+    params.push(`%${keyword}%`);
+    const n = params.length;   // 同一个占位符复用 5 次
+    conds.push(`(hazard_code ILIKE $${n} OR description ILIKE $${n} OR location ILIKE $${n}`
+      + ` OR inspector ILIKE $${n} OR rectify_person ILIKE $${n})`);
+  }
+
+  // 按 id 精确圈定（用于「导出选中」「批量操作」）
+  const ids = (q.get("ids") || "").split(",").map((s) => s.trim()).filter(Boolean);
+  if (ids.length) {
+    params.push(ids);
+    conds.push(`id = ANY($${params.length})`);
+  }
+
+  return { where: conds.length ? conds.join(" AND ") : "TRUE", params };
 }
 
 /**
@@ -733,26 +802,42 @@ async function handleHazards(req, res, url, id, user) {
       const q = url.searchParams;
       const page = Math.max(1, Number(q.get("page")) || 1);
       const pageSize = Math.min(100, Math.max(1, Number(q.get("pageSize")) || 10));
-      const r = await pool.query("SELECT * FROM hazard");
-      let rows = r.rows.map((x) => rowToHazard(x, today));
-      const level = q.get("level"); const category = q.get("category"); const status = q.get("status");
-      const dateFrom = q.get("dateFrom"); const dateTo = q.get("dateTo");
-      const keyword = (q.get("keyword") || "").trim().toLowerCase();
-      if (level) rows = rows.filter((h) => h.level === level);
-      if (category) rows = rows.filter((h) => h.category === category);
-      if (status) rows = rows.filter((h) => matchStatus(h, status));
-      if (dateFrom) rows = rows.filter((h) => h.inspectDate >= dateFrom);
-      if (dateTo) rows = rows.filter((h) => h.inspectDate <= dateTo);
-      if (keyword) rows = rows.filter((h) => [h.hazardCode, h.description, h.location, h.inspector, h.rectifyPerson].join(" ").toLowerCase().includes(keyword));
-      rows.sort((a, b) => (b.inspectDate || "").localeCompare(a.inspectDate || "") || (b.createdAt || "").localeCompare(a.createdAt || ""));
-      const total = rows.length;
-      const start = (page - 1) * pageSize;
-      return sendJson(res, { items: rows.slice(start, start + pageSize), total, page, pageSize });
+      const { where, params } = buildHazardWhere(q, today);
+
+      // 筛选与计数都在数据库完成，只把当前页取回内存（见 buildHazardWhere 注释）
+      const cnt = await pool.query(`SELECT COUNT(*)::int AS c FROM hazard WHERE ${where}`, params);
+      const pageRes = await pool.query(
+        `SELECT * FROM hazard WHERE ${where} ORDER BY inspect_date DESC, created_at DESC
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, pageSize, (page - 1) * pageSize]
+      );
+      return sendJson(res, {
+        items: pageRes.rows.map((x) => rowToHazard(x, today)),
+        total: cnt.rows[0].c, page, pageSize,
+      });
     }
 
     if (req.method === "POST") {
       let body;
       try { body = await readBody(req); } catch (e) { return badRequest(res, e.message); }
+
+      // —— 批量删除（台账页多选后调用；仅安全管理员/系统管理员）——
+      if (body.action === "batch-delete") {
+        if (!["safety_admin", "admin"].includes(user.role)) return badRequest(res, "当前角色无权限删除隐患");
+        const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string" && x) : [];
+        if (ids.length === 0) return badRequest(res, "请先选择要删除的隐患");
+        if (ids.length > 200) return badRequest(res, "单次最多删除 200 条");
+        const info = await pool.query(
+          "SELECT id, hazard_code FROM hazard WHERE id = ANY($1)", [ids]
+        );
+        await pool.query("DELETE FROM hazard WHERE id = ANY($1)", [ids]);
+        await logOp(user, "delete_hazard", {
+          targetId: null, targetCode: "",
+          detail: `批量删除 ${info.rowCount} 条隐患：${info.rows.map((r) => r.hazard_code).slice(0, 10).join("、")}${info.rowCount > 10 ? " 等" : ""}`,
+        });
+        return sendJson(res, { deleted: info.rowCount });
+      }
+
       const required = ["inspectDate", "inspector", "location", "description", "category", "level", "rectifyMeasure", "rectifyPerson", "rectifyFund", "planDeadline"];
       for (const k of required) {
         if (body[k] === undefined || body[k] === null || String(body[k]).trim() === "") return badRequest(res, `字段 ${k} 不能为空`);
@@ -763,6 +848,10 @@ async function handleHazards(req, res, url, id, user) {
       if (isNaN(fund) || fund < 0) return badRequest(res, "整改资金格式错误");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(body.inspectDate)) return badRequest(res, "排查日期格式错误");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(body.planDeadline)) return badRequest(res, "计划完成时限格式错误");
+      if (!isRealDate(body.inspectDate)) return badRequest(res, "排查日期不是有效日期");
+      if (!isRealDate(body.planDeadline)) return badRequest(res, "计划完成时限不是有效日期");
+      // 日期先后关系校验：计划完成时限不能早于排查日期
+      if (body.planDeadline < body.inspectDate) return badRequest(res, "计划完成时限不能早于排查日期");
 
       const datePart = today.replace(/-/g, "");
       // 原子取号（UPSERT ... RETURNING）
@@ -882,12 +971,19 @@ async function handleHazards(req, res, url, id, user) {
       if (isNaN(fund) || fund < 0) return badRequest(res, "整改资金格式错误");
       vals.push(String(fund)); sets.push(`rectify_fund = $${vals.length}`);
     }
-    if (body.status !== undefined) {
-      if (body.status === "closed") return badRequest(res, "闭环请通过复查接口完成");
-      if (!STATUSES.includes(body.status)) return badRequest(res, "状态非法");
-      vals.push(body.status); sets.push(`status = $${vals.length}`);
-    }
-    if (sets.length === 0) return badRequest(res, "未提供可更新字段");
+      if (body.status !== undefined) {
+        if (body.status === "closed") return badRequest(res, "闭环请通过复查接口完成");
+        if (!STATUSES.includes(body.status)) return badRequest(res, "状态非法");
+        vals.push(body.status); sets.push(`status = $${vals.length}`);
+      }
+      // 日期校验：取"本次要写入的值"与"数据库现有值"中的实际生效值做先后比对
+      // （只改其中一个字段时，另一方沿用原值，否则会漏检）
+      const effInspect = body.inspectDate !== undefined ? String(body.inspectDate) : row.inspect_date;
+      const effDeadline = body.planDeadline !== undefined ? String(body.planDeadline) : row.plan_deadline;
+      if (!isRealDate(effInspect)) return badRequest(res, "排查日期不是有效日期");
+      if (!isRealDate(effDeadline)) return badRequest(res, "计划完成时限不是有效日期");
+      if (effDeadline < effInspect) return badRequest(res, "计划完成时限不能早于排查日期");
+      if (sets.length === 0) return badRequest(res, "未提供可更新字段");
     sets.push("updated_at = NOW()");
     vals.push(id);
     await pool.query(`UPDATE hazard SET ${sets.join(", ")} WHERE id = $${vals.length}`, vals);
@@ -1094,18 +1190,12 @@ async function handleExport(res, url, user) {
   const format = (q.get("format") || "xlsx").toLowerCase();
   const today = localDateStr();
 
-  const r = await pool.query("SELECT * FROM hazard");
-  let rows = r.rows.map((x) => rowToHazard(x, today));
-  const level = q.get("level"); const category = q.get("category"); const status = q.get("status");
-  const dateFrom = q.get("dateFrom"); const dateTo = q.get("dateTo");
-  const keyword = (q.get("keyword") || "").trim().toLowerCase();
-  if (level) rows = rows.filter((h) => h.level === level);
-  if (category) rows = rows.filter((h) => h.category === category);
-  if (status) rows = rows.filter((h) => matchStatus(h, status));
-  if (dateFrom) rows = rows.filter((h) => h.inspectDate >= dateFrom);
-  if (dateTo) rows = rows.filter((h) => h.inspectDate <= dateTo);
-  if (keyword) rows = rows.filter((h) => [h.hazardCode, h.description, h.location, h.inspector, h.rectifyPerson].join(" ").toLowerCase().includes(keyword));
-  rows.sort((a, b) => (b.inspectDate || "").localeCompare(a.inspectDate || "") || (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const { where, params } = buildHazardWhere(q, today);
+  // 与列表页共用同一套筛选 SQL（含「逾期/未闭环」派生状态），口径完全一致
+  const r = await pool.query(
+    `SELECT * FROM hazard WHERE ${where} ORDER BY inspect_date DESC, created_at DESC`, params
+  );
+  const rows = r.rows.map((x) => rowToHazard(x, today));
 
   const headers = ["隐患编号", "排查日期", "排查人员", "所在部位", "隐患描述", "隐患类别", "隐患等级",
     "整改措施", "整改责任人", "整改资金(元)", "计划完成时限", "状态",
@@ -1141,45 +1231,70 @@ async function handleExport(res, url, user) {
   return res.end(buf);
 }
 
-/* ---------------- 图片上传 ----------------
- * 前端会先用 canvas 压缩（长边 1600px / JPEG 0.82）再以 dataURL 提交，
- * 因此这里收到的一般是几百 KB；仍做类型 + 体积双重校验。
+/* ---------------- 附件上传 ----------------
+ * 支持**图片**与**常用办公文档**两类附件。
+ *   · 图片：前端先用 canvas 压缩（长边 1600px / JPEG 0.82）再上传，限 8MB
+ *   · 文档：PDF / Word / Excel 原样上传（不压缩），限 20MB
+ * 落盘文件名统一为「随机24位hex + 原扩展名」，不可枚举、不会重名。
  */
-const IMAGE_EXT = { "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif" };
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 单张解码后上限 8MB
+const MB = 1024 * 1024;
+const UPLOAD_TYPES = {
+  // —— 图片 ——
+  "image/jpeg": { ext: ".jpg", kind: "image", max: 8 * MB },
+  "image/jpg": { ext: ".jpg", kind: "image", max: 8 * MB },
+  "image/png": { ext: ".png", kind: "image", max: 8 * MB },
+  "image/webp": { ext: ".webp", kind: "image", max: 8 * MB },
+  "image/gif": { ext: ".gif", kind: "image", max: 8 * MB },
+  // —— 文档 ——
+  "application/pdf": { ext: ".pdf", kind: "doc", max: 20 * MB },
+  "application/msword": { ext: ".doc", kind: "doc", max: 20 * MB },
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { ext: ".docx", kind: "doc", max: 20 * MB },
+  "application/vnd.ms-excel": { ext: ".xls", kind: "doc", max: 20 * MB },
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { ext: ".xlsx", kind: "doc", max: 20 * MB },
+};
+const MAX_UPLOAD_BYTES = 20 * MB;   // 单文件解码后上限（base64 传输时约需 1.4 倍）
+
+/** 判断一个附件 URL 是否是图片（供前端之外的服务端场景复用） */
+const IMAGE_URL_RE = /\.(jpe?g|png|webp|gif)$/i;
 
 /**
  * POST /api/upload  { dataUrl: "data:image/png;base64,..." }
  * 落盘为 uploads/<随机24位hex>.<ext>，返回 { url: "/uploads/xxx", size }。
  * 文件名随机 → 不可枚举；不校验登录后才能读图（因 <img> 无法携带鉴权头）。
  */
-async function handleUpload(req, res, user) {
-  if (req.method !== "POST") return sendJson(res, { error: { code: "METHOD_NOT_ALLOWED", message: "不支持的方法" } }, 405);
-  let body;
-  try { body = await readBody(req, MAX_IMAGE_BYTES * 2); } catch (e) { return badRequest(res, e.message); }
+  async function handleUpload(req, res, user) {
+    if (req.method !== "POST") return sendJson(res, { error: { code: "METHOD_NOT_ALLOWED", message: "不支持的方法" } }, 405);
+    let body;
+    try { body = await readBody(req, MAX_UPLOAD_BYTES * 2); } catch (e) { return badRequest(res, e.message); }
 
-  const dataUrl = String(body.dataUrl || "");
-  const m = dataUrl.match(/^data:(image\/[a-zA-Z+]+);base64,([A-Za-z0-9+/=\s]+)$/);
-  if (!m) return badRequest(res, "图片格式错误（需为 dataURL）");
-  const mime = m[1].toLowerCase();
-  const ext = IMAGE_EXT[mime];
-  if (!ext) return badRequest(res, "仅支持 JPG / PNG / WEBP / GIF 图片");
+    const dataUrl = String(body.dataUrl || "");
+    // 注意：MIME 里可能带 + - . 等字符（如 openxmlformats 那一长串），正则要放宽
+    const m = dataUrl.match(/^data:([a-zA-Z0-9/+.\-]+);base64,([A-Za-z0-9+/=\s]+)$/);
+    if (!m) return badRequest(res, "文件格式错误（需为 dataURL）");
 
-  let buf;
-  try { buf = Buffer.from(m[2].replace(/\s/g, ""), "base64"); } catch { return badRequest(res, "图片解码失败"); }
-  if (buf.length === 0) return badRequest(res, "图片内容为空");
-  if (buf.length > MAX_IMAGE_BYTES) return badRequest(res, `图片过大（限 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB）`);
+    const mime = m[1].toLowerCase();
+    const type = UPLOAD_TYPES[mime];
+    if (!type) {
+      return badRequest(res, `不支持的文件类型：${mime}。仅支持 JPG/PNG/WEBP/GIF 图片与 PDF/Word/Excel 文档`);
+    }
 
-  const filename = `${genId()}${ext}`;
-  try {
-    await fs.promises.writeFile(path.join(UPLOAD_DIR, filename), buf);
-  } catch (e) {
-    console.error("[UPLOAD]", e);
-    return sendJson(res, { error: { code: "INTERNAL_ERROR", message: "图片保存失败" } }, 500);
+    let buf;
+    try { buf = Buffer.from(m[2].replace(/\s/g, ""), "base64"); } catch { return badRequest(res, "文件解码失败"); }
+    if (buf.length === 0) return badRequest(res, "文件内容为空");
+    if (buf.length > type.max) {
+      return badRequest(res, `文件过大（${type.kind === "image" ? "图片" : "文档"}限 ${Math.round(type.max / 1024 / 1024)}MB）`);
+    }
+
+    const filename = `${genId()}${type.ext}`;
+    try {
+      await fs.promises.writeFile(path.join(UPLOAD_DIR, filename), buf);
+    } catch (e) {
+      console.error("[UPLOAD]", e);
+      return sendJson(res, { error: { code: "INTERNAL_ERROR", message: "文件保存失败" } }, 500);
+    }
+    console.log(`[UPLOAD] ${user?.user_name || "-"} → ${filename} (${(buf.length / 1024).toFixed(0)}KB, ${type.kind})`);
+    return sendJson(res, { url: `/uploads/${filename}`, size: buf.length, kind: type.kind, mime }, 201);
   }
-  console.log(`[UPLOAD] ${user?.user_name || "-"} → ${filename} (${(buf.length / 1024).toFixed(0)}KB)`);
-  return sendJson(res, { url: `/uploads/${filename}`, size: buf.length }, 201);
-}
 
 /* ---------------- 图片维护：统计 / 清理无引用图片 ----------------
  * 背景：照片是"选择即上传"，用户若只上传未提交表单就会留下**孤儿文件**。
