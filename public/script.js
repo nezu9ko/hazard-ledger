@@ -282,30 +282,52 @@ function showPrintHintOnce() {
   }, 600);
 }
 
-function openModal({ title, desc, bodyHtml, confirmText = "确认", cancelText = "取消", danger = false, onConfirm }) {
-  const overlay = document.createElement("div");
-  overlay.className = "overlay";
-  overlay.innerHTML = `
-    <div class="modal">
-      <div class="modal-head"><h3>${esc(title)}</h3>${desc ? `<p>${esc(desc)}</p>` : ""}</div>
-      <div class="modal-body">${bodyHtml}</div>
-      <div class="modal-foot">
-        <button class="btn btn-outline" data-act="cancel">${esc(cancelText)}</button>
-        <button class="btn ${danger ? "btn-danger" : "btn-primary"}" data-act="ok">${esc(confirmText)}</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  const close = () => overlay.remove();
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-  $('[data-act="cancel"]', overlay).onclick = close;
-  $('[data-act="ok"]', overlay).onclick = async () => {
-    const ok = await onConfirm(overlay);
-    if (ok !== false) close();
-  };
-  return overlay;
-}
+  function openModal({ title, desc, bodyHtml, confirmText = "确认", cancelText = "取消", danger = false, dismissable = true, onConfirm, onCancel }) {
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.innerHTML = `
+      <div class="modal">
+        <div class="modal-head"><h3>${esc(title)}</h3>${desc ? `<p>${esc(desc)}</p>` : ""}</div>
+        <div class="modal-body">${bodyHtml}</div>
+        <div class="modal-foot">
+          <button class="btn btn-outline" data-act="cancel">${esc(cancelText)}</button>
+          <button class="btn ${danger ? "btn-danger" : "btn-primary"}" data-act="ok">${esc(confirmText)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    // dismissable=false 时点击遮罩不关闭（用于"必须处理"的强制流程）
+    overlay.addEventListener("click", (e) => { if (e.target === overlay && dismissable) close(); });
+    $('[data-act="cancel"]', overlay).onclick = async () => {
+      if (onCancel) { const r = await onCancel(overlay); if (r === false) return; }
+      close();
+    };
+    $('[data-act="ok"]', overlay).onclick = async () => {
+      const ok = await onConfirm(overlay);
+      if (ok !== false) close();
+    };
+    return overlay;
+  }
 
 /* ---------- API 封装 ---------- */
+/* 强制改密引导：页面上可能同时有多个接口返回 MUST_CHANGE_PASSWORD（如看板同时拉统计与提醒），
+ * 用时间窗保证**短时间内只弹一次**，避免叠出好几个窗口；
+ * 但用户关掉之后再触发仍会重弹（否则他会卡在"处处失败"却没入口改密）。
+ * 强制模式下窗口不可点遮罩关闭，取消按钮即"退出登录"。 */
+let mustChangePromptAt = 0;
+function promptMustChangePassword() {
+  if (Date.now() - mustChangePromptAt < 1500) return;
+  mustChangePromptAt = Date.now();
+  setTimeout(() => { if (!document.querySelector(".overlay")) openChangePassword(true); }, 50);
+}
+
+/** 退出登录（清服务端会话 + 清本地会话 + 回登录页） */
+async function doLogout() {
+  try { await api.post("/auth?action=logout", {}); } catch { /* 忽略网络异常，本地照样清干净 */ }
+  clearSession(); session = null;
+  location.hash = "#/login";
+}
+
 /**
  * 统一的接口请求函数。
  *  - 自动拼接 /api 前缀；
@@ -331,6 +353,12 @@ async function apiFetch(path, options = {}) {
     clearSession(); session = null;
     if (location.hash !== "#/login") location.hash = "#/login";
     throw new Error("登录已过期，请重新登录");
+  }
+  // 服务端强制改密：未修改初始密码时，除 /api/auth 外的接口都会被拒。
+  // 这里主动把改密弹窗拉起来（后端才是真正的强制点，前端只是配合引导）。
+  if (res.status === 403 && data?.error?.code === "MUST_CHANGE_PASSWORD") {
+    promptMustChangePassword();
+    throw new Error(data.error.message);
   }
   if (!res.ok) {
     const msg = data?.error?.message || `请求失败 (${res.status})`;
@@ -592,10 +620,7 @@ function bindLayout() {
     document.addEventListener("click", () => { if (drop) drop.style.display = "none"; }, { once: true });
     drop.querySelector('[data-act="profile"]').onclick = () => { location.hash = "#/profile"; };
     drop.querySelector('[data-act="change-pwd"]').onclick = () => openChangePassword();
-    drop.querySelector('[data-act="logout"]').onclick = async () => {
-      try { await api.post("/auth?action=logout", {}); } catch { /* 忽略 */ }
-      clearSession(); session = null; location.hash = "#/login";
-    };
+    drop.querySelector('[data-act="logout"]').onclick = () => doLogout();
   }
   const mt = $("#menuToggle");
   if (mt) mt.onclick = () => $("#sidebar")?.classList.toggle("open");
@@ -644,7 +669,8 @@ function renderLogin() {
       saveSession(session);
       // 登录后默认进入「个人中心」（可在那里看到自己的待办提醒）
       location.hash = "#/profile";
-      if (res.mustChangePassword) setTimeout(() => openChangePassword(true), 300);
+      mustChangePromptAt = 0;                                       // 新会话，复位引导时间窗
+      if (res.mustChangePassword) promptMustChangePassword();
     } catch (err) {
       errEl.textContent = err.message; errEl.style.display = "block";
       btn.disabled = false; btn.textContent = "登 录";
@@ -652,16 +678,21 @@ function renderLogin() {
   };
 }
 
-function openChangePassword(forced = false) {
-  openModal({
-    title: forced ? "首次登录，请修改密码" : "修改密码",
-    desc: forced ? "为了账号安全，请先修改初始密码后再使用系统" : "",
-    bodyHtml: `
-      <div class="field"><label>旧密码</label><input class="input" id="pwdOld" type="password" placeholder="请输入旧密码"></div>
-      <div class="field"><label>新密码</label><input class="input" id="pwdNew" type="password" placeholder="至少6位"></div>
-      <div class="field"><label>确认新密码</label><input class="input" id="pwdConfirm" type="password" placeholder="请再次输入新密码"></div>
-      <div class="err-text" id="pwdErr" style="display:none"></div>`,
-    confirmText: "确认修改",
+  function openChangePassword(forced = false) {
+    openModal({
+      title: forced ? "首次登录，请修改密码" : "修改密码",
+      desc: forced ? "为了账号安全，请先修改初始密码后再使用系统" : "",
+      bodyHtml: `
+        <div class="field"><label>旧密码</label><input class="input" id="pwdOld" type="password" placeholder="请输入旧密码"></div>
+        <div class="field"><label>新密码</label><input class="input" id="pwdNew" type="password" placeholder="至少6位"></div>
+        <div class="field"><label>确认新密码</label><input class="input" id="pwdConfirm" type="password" placeholder="请再次输入新密码"></div>
+        <div class="err-text" id="pwdErr" style="display:none"></div>`,
+      confirmText: "确认修改",
+      // 强制改密时：不允许点遮罩关闭，取消按钮改为「退出登录」，
+      // 否则用户关掉窗口就卡在"处处 403"的死角里，出不来也进不去。
+      dismissable: !forced,
+      cancelText: forced ? "退出登录" : "取消",
+      onCancel: forced ? async () => { await doLogout(); } : undefined,
     onConfirm: async (overlay) => {
       const oldPassword = $("#pwdOld", overlay).value;
       const newPassword = $("#pwdNew", overlay).value;
@@ -673,9 +704,10 @@ function openChangePassword(forced = false) {
       if (newPassword.length < 6) return fail("新密码至少6位");
       if (confirm !== newPassword) return fail("两次密码输入不一致");
       try {
-        await api.post("/auth?action=change-password", { id: currentUser().id, oldPassword, newPassword });
-        toast("密码修改成功");
-        if (session) { session.mustChangePassword = false; saveSession(session); }
+          await api.post("/auth?action=change-password", { id: currentUser().id, oldPassword, newPassword });
+          mustChangePromptAt = 0;       // 改密完成，复位引导时间窗
+          toast("密码修改成功");
+          if (session) { session.mustChangePassword = false; saveSession(session); }
       } catch (err) { return fail(err.message); }
     },
   });

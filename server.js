@@ -98,10 +98,84 @@ const ROLES = ["entry", "safety_admin", "reviewer", "admin"];                   
 
 /* ---------------- 工具 ---------------- */
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
-/** 口令散列：SHA-256(salt::password)。
- *  说明：这是轻量实现（非 bcrypt/argon2），对局域网内部系统够用；
- *  若未来暴露到公网，建议替换为 scrypt/bcrypt。 */
-const hashPassword = (pwd, salt) => sha256(`${salt}::${pwd}`);
+/* ---------- 口令散列（scrypt 慢哈希） ----------
+ * 为什么不用 SHA-256：快哈希一秒能算上亿次，数据库文件一旦泄露，
+ * 口令可被离线暴力破解。scrypt 是**故意设计得慢**的内存困难型算法，
+ * 且 Node 内置（crypto.scryptSync），**无需新增任何依赖**。
+ *
+ * 存储格式（自描述，便于日后调参或换算法）：
+ *   scrypt$N$r$p$<盐hex>$<派生密钥hex>
+ * 兼容旧格式：早期数据是 SHA-256(salt::password)，
+ * 用户下次登录校验通过时会**自动就地升级**为 scrypt（见 handleAuth）。
+ */
+const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 64 };
+const SCRYPT_PREFIX = "scrypt$";
+
+/** 生成新口令散列；同时返回盐（盐已内嵌在 hash 里，salt 列仅作可观测用途） */
+function makePasswordHash(pwd) {
+  const salt = crypto.randomBytes(16);
+  const dk = crypto.scryptSync(String(pwd), salt, SCRYPT.keylen, { N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p });
+  return {
+    hash: `${SCRYPT_PREFIX}${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString("hex")}$${dk.toString("hex")}`,
+    salt: salt.toString("hex"),
+  };
+}
+
+/** 旧版快哈希 —— 仅用于校验历史数据、以及校验通过后触发升级 */
+const hashPasswordLegacy = (pwd, salt) => sha256(`${salt}::${pwd}`);
+
+/**
+ * 校验口令。
+ * @returns {{ ok: boolean, legacy: boolean }} legacy=true 表示这条记录还是旧格式，
+ *          调用方应在校验成功后把它升级成 scrypt。
+ * 比较使用 crypto.timingSafeEqual（恒定时间），避免通过响应时间侧信道推测口令。
+ */
+function verifyPassword(pwd, row) {
+  const stored = String(row.password_hash || "");
+  if (stored.startsWith(SCRYPT_PREFIX)) {
+    const parts = stored.split("$");
+    if (parts.length !== 6) return { ok: false, legacy: false };
+    const [, N, r, p, saltHex, hashHex] = parts;
+    try {
+      const dk = crypto.scryptSync(String(pwd), Buffer.from(saltHex, "hex"), hashHex.length / 2,
+        { N: Number(N), r: Number(r), p: Number(p) });
+      const want = Buffer.from(hashHex, "hex");
+      return { ok: dk.length === want.length && crypto.timingSafeEqual(dk, want), legacy: false };
+    } catch { return { ok: false, legacy: false }; }
+  }
+  // 旧格式：SHA-256(salt::pwd)
+  const a = Buffer.from(hashPasswordLegacy(pwd, row.salt || ""));
+  const b = Buffer.from(stored);
+  return { ok: a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b), legacy: true };
+}
+
+/* ---------- 登录失败限制 ----------
+ * 连续输错 MAX_LOGIN_FAILS 次后，锁定该账号 LOGIN_LOCK_MINUTES 分钟。
+ * 计数保存在内存（进程重启即清空）—— 对局域网内部系统足够：
+ * 攻击者无法重启服务，而管理员重启反而是一种应急解锁手段。
+ * 成功登录会清零计数。
+ */
+const MAX_LOGIN_FAILS = 5;                  // 允许的连续失败次数
+const LOGIN_LOCK_MINUTES = 15;              // 锁定分钟数
+const loginFails = new Map();               // userName -> { count, lockedUntil }
+
+/** 查询某账号是否处于锁定中；返回剩余毫秒（0 表示未锁定） */
+function loginLockRemain(userName) {
+  const rec = loginFails.get(userName);
+  if (!rec || !rec.lockedUntil) return 0;
+  const remain = rec.lockedUntil - Date.now();
+  if (remain <= 0) { loginFails.delete(userName); return 0; }
+  return remain;
+}
+/** 记一次失败；返回剩余可尝试次数（0 表示本次已触发锁定） */
+function recordLoginFail(userName) {
+  const rec = loginFails.get(userName) || { count: 0, lockedUntil: 0 };
+  rec.count += 1;
+  if (rec.count >= MAX_LOGIN_FAILS) { rec.lockedUntil = Date.now() + LOGIN_LOCK_MINUTES * 60 * 1000; rec.count = 0; }
+  loginFails.set(userName, rec);
+  return rec.lockedUntil ? 0 : MAX_LOGIN_FAILS - rec.count;
+}
+const clearLoginFails = (userName) => loginFails.delete(userName);
 /** 生成 24 位十六进制随机 ID（用于主键、文件名、会话令牌等，碰撞概率极低） */
 const genId = () => crypto.randomBytes(12).toString("hex");
 
@@ -346,6 +420,7 @@ function bearerToken(req) {
  */
 const ACTION_LABELS = {
   login: "登录系统",
+  login_fail: "登录失败",
   create_hazard: "登记隐患",
   update_hazard: "修改隐患",
   start_rectify: "开始整改",
@@ -583,15 +658,15 @@ async function initDatabase() {
   await applySchemaComments();
 
   // 4) 播种默认管理员
-  const c = await pool.query("SELECT COUNT(*)::int AS c FROM users");
-  if (c.rows[0].c === 0) {
-    const salt = genId();
-    await pool.query(
-      "INSERT INTO users (id,user_id,user_name,role,salt,password_hash,must_change_password) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-      [genId(), "u_admin", "admin", "admin", salt, hashPassword(DEFAULT_INITIAL_PASSWORD, salt), false]
-    );
-    console.log("[DB] 已创建默认管理员 admin / 123456");
-  }
+    const c = await pool.query("SELECT COUNT(*)::int AS c FROM users");
+    if (c.rows[0].c === 0) {
+      const ph = makePasswordHash(DEFAULT_INITIAL_PASSWORD);
+      await pool.query(
+        "INSERT INTO users (id,user_id,user_name,role,salt,password_hash,must_change_password) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        [genId(), "u_admin", "admin", "admin", ph.salt, ph.hash, false]
+      );
+      console.log("[DB] 已创建默认管理员 admin / 123456");
+    }
 }
 
 const pool = new Pool(CFG.db);
@@ -611,14 +686,49 @@ async function handleAuth(req, res, url) {
   let body;
   try { body = await readBody(req); } catch (e) { return badRequest(res, e.message); }
 
-  if (action === "login") {
-    const userName = String(body.userName || "").trim();
-    const password = String(body.password || "");
-    if (!userName || !password) return badRequest(res, "账号或密码错误");
-    const r = await pool.query("SELECT * FROM users WHERE user_name = $1", [userName]);
-    const u = r.rows[0];
-    if (!u || hashPassword(password, u.salt) !== u.password_hash) return badRequest(res, "账号或密码错误");
-    const token = await createSession(u.id);
+    if (action === "login") {
+      const userName = String(body.userName || "").trim();
+      const password = String(body.password || "");
+      if (!userName || !password) return badRequest(res, "账号或密码错误");
+
+      // —— 登录失败限制：锁定期间直接拒绝，不查库、也不比对口令 ——
+      const remainMs = loginLockRemain(userName);
+      if (remainMs > 0) {
+        const mins = Math.ceil(remainMs / 60000);
+        return sendJson(res, {
+          error: { code: "LOGIN_LOCKED", message: `密码连续输错 ${MAX_LOGIN_FAILS} 次，账号已锁定，请 ${mins} 分钟后再试` },
+        }, 429);
+      }
+
+      const r = await pool.query("SELECT * FROM users WHERE user_name = $1", [userName]);
+      const u = r.rows[0];
+      // 用户不存在时也走一次散列校验（避免通过响应快慢判断账号是否存在）
+      const v = u ? verifyPassword(password, u) : { ok: false, legacy: false };
+
+      if (!v.ok) {
+        const left = recordLoginFail(userName);
+        await logOp({ id: u ? u.id : null, user_name: userName }, "login_fail", {
+          targetType: "user", targetCode: userName,
+          detail: left > 0
+            ? `密码错误，还可尝试 ${left} 次`
+            : `密码连续输错 ${MAX_LOGIN_FAILS} 次，账号锁定 ${LOGIN_LOCK_MINUTES} 分钟`,
+        });
+        return badRequest(res, left > 0
+          ? `账号或密码错误（还可尝试 ${left} 次）`
+          : `密码连续输错 ${MAX_LOGIN_FAILS} 次，账号已锁定 ${LOGIN_LOCK_MINUTES} 分钟`);
+      }
+      clearLoginFails(userName);
+
+      // —— 历史数据的旧格式散列（SHA-256）在登录成功时就地升级为 scrypt，用户无感知 ——
+      if (v.legacy) {
+        try {
+          const ph = makePasswordHash(password);
+          await pool.query("UPDATE users SET salt=$1, password_hash=$2 WHERE id=$3", [ph.salt, ph.hash, u.id]);
+          console.log(`[AUTH] 用户 ${u.user_name} 的口令散列已自动升级为 scrypt`);
+        } catch (e) { console.error("[AUTH] 口令散列升级失败:", e.message); }
+      }
+
+      const token = await createSession(u.id);
     await logOp({ id: u.id, user_name: u.user_name }, "login", { targetType: "user", targetId: u.id, targetCode: u.user_name, detail: `角色：${u.role}` });
     return sendJson(res, {
       success: true,
@@ -648,14 +758,14 @@ async function handleAuth(req, res, url) {
     if (!id || !oldPassword || !newPassword) return badRequest(res, "参数不完整");
     if (String(newPassword).length < 6) return badRequest(res, "新密码至少6位");
     const r = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
-    const u = r.rows[0];
-    if (!u) return notFound(res, "用户不存在");
-    if (hashPassword(String(oldPassword), u.salt) !== u.password_hash) return badRequest(res, "旧密码错误");
-    const salt = genId();
-    await pool.query("UPDATE users SET salt=$1, password_hash=$2, must_change_password=FALSE WHERE id=$3",
-      [salt, hashPassword(String(newPassword), salt), id]);
-    return sendJson(res, { success: true });
-  }
+      const u = r.rows[0];
+      if (!u) return notFound(res, "用户不存在");
+      if (!verifyPassword(String(oldPassword), u).ok) return badRequest(res, "旧密码错误");
+      const ph = makePasswordHash(String(newPassword));
+      await pool.query("UPDATE users SET salt=$1, password_hash=$2, must_change_password=FALSE WHERE id=$3",
+        [ph.salt, ph.hash, id]);
+      return sendJson(res, { success: true });
+    }
   return notFound(res, "未知操作");
 }
 
@@ -682,11 +792,12 @@ async function handleUsers(req, res, url, id, user) {
       if (!ROLES.includes(body.role)) return badRequest(res, "角色非法");
       const dup = await pool.query("SELECT 1 FROM users WHERE user_name = $1", [userName]);
       if (dup.rowCount > 0) return badRequest(res, "用户姓名已存在");
-      const salt = genId(); const uid = genId(); const userId = body.userId || `u_${Date.now()}`;
-      await pool.query(
-        "INSERT INTO users (id,user_id,user_name,role,salt,password_hash,must_change_password) VALUES ($1,$2,$3,$4,$5,$6,TRUE)",
-        [uid, userId, userName, body.role, salt, hashPassword(DEFAULT_INITIAL_PASSWORD, salt)]
-      );
+        const uid = genId(); const userId = body.userId || `u_${Date.now()}`;
+        const ph = makePasswordHash(DEFAULT_INITIAL_PASSWORD);
+        await pool.query(
+          "INSERT INTO users (id,user_id,user_name,role,salt,password_hash,must_change_password) VALUES ($1,$2,$3,$4,$5,$6,TRUE)",
+          [uid, userId, userName, body.role, ph.salt, ph.hash]
+        );
       const created = await pool.query("SELECT * FROM users WHERE id = $1", [uid]);
       await logOp(user, "create_user", { targetType: "user", targetId: uid, targetCode: userName, detail: `角色：${body.role}` });
       return sendJson(res, rowToUser(created.rows[0]), 201);
@@ -705,10 +816,10 @@ async function handleUsers(req, res, url, id, user) {
   if (req.method === "PATCH") {
     let body;
     try { body = await readBody(req); } catch (e) { return badRequest(res, e.message); }
-    if (body.action === "reset-password") {
-      const salt = genId();
-      await pool.query("UPDATE users SET salt=$1, password_hash=$2, must_change_password=TRUE WHERE id=$3",
-        [salt, hashPassword(DEFAULT_INITIAL_PASSWORD, salt), id]);
+      if (body.action === "reset-password") {
+        const ph = makePasswordHash(DEFAULT_INITIAL_PASSWORD);
+        await pool.query("UPDATE users SET salt=$1, password_hash=$2, must_change_password=TRUE WHERE id=$3",
+          [ph.salt, ph.hash, id]);
       await logOp(user, "reset_password", { targetType: "user", targetId: id, targetCode: found.rows[0].user_name, detail: "重置为初始密码" });
       return sendJson(res, { success: true });
     }
@@ -1486,6 +1597,16 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith("/api/")) {
       sessionUser = await getSessionUser(bearerToken(req));
       if (!sessionUser) return sendJson(res, { error: { code: "UNAUTHORIZED", message: "未登录或登录已过期，请重新登录" } }, 401);
+
+      // 未修改初始密码的用户：除「改密 / 登出 / 会话查询」（都在 /api/auth 下）外一律拒绝。
+      // 说明：前端本来就会弹窗提醒改密，但那只是体验层，直接调 API 就能绕过；
+      //       这里才是真正的强制点。
+      if (sessionUser.must_change_password && p !== "/api/auth") {
+        return sendJson(res, {
+          error: { code: "MUST_CHANGE_PASSWORD", message: "请先修改初始密码后再使用系统" },
+        }, 403);
+      }
+
       const need = requiredRoles(req.method, p);
       if (need && !need.includes(sessionUser.role)) {
         return sendJson(res, { error: { code: "FORBIDDEN", message: "当前角色无权限执行此操作" } }, 403);
