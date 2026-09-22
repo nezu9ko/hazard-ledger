@@ -64,13 +64,43 @@ a { color: var(--primary); text-decoration: none; }
 
 /* ---------- 布局 ---------- */
 .app { display: flex; height: 100vh; overflow: hidden; }
+
+/* ---------- 侧边栏：隐藏式（默认收起，鼠标靠近左边缘自动滑出） ----------
+ * 布局要点：侧边栏改为 position:fixed 脱离文档流，因此 .main 自动占满整宽。
+ * 状态由两个选择器驱动：
+ *   .sidebar-hover-zone:hover ~ .sidebar  → 鼠标进入左边缘 8px 感应区
+ *   .sidebar:hover                        → 鼠标在侧边栏内部（保持展开，避免闪烁）
+ *   .sidebar.open                          → 手机端点 ☰ 强制展开
+ */
 .sidebar {
-  width: 232px;
-  flex-shrink: 0;
+  position: fixed; left: 0; top: 0; bottom: 0;
+  width: 232px; z-index: 90;
   background: #fff;
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform .22s ease;
+  box-shadow: 2px 0 14px rgba(15, 23, 42, .08);
+  overflow-y: auto;
 }
+/* 左边缘感应区（比侧边栏层级低，展开后被侧边栏盖住也不影响：靠 .sidebar:hover 维持） */
+.sidebar-hover-zone {
+  position: fixed; left: 0; top: 0; bottom: 0; width: 8px; z-index: 85;
+}
+/* 收起时在左边缘留一个小蓝条，提示"这里可以划出菜单" */
+.sidebar-hover-zone::after {
+  content: ""; position: absolute; left: 0; top: 50%;
+  transform: translateY(-50%);
+  width: 3px; height: 52px;
+  border-radius: 0 3px 3px 0;
+  background: var(--primary);
+  opacity: .28;
+  transition: opacity .2s;
+}
+.sidebar-hover-zone:hover::after { opacity: 0; }
+.sidebar-hover-zone:hover ~ .sidebar,
+.sidebar:hover,
+.sidebar.open { transform: translateX(0); }
 .sidebar-brand {
   min-height: 68px; display: flex; align-items: center; gap: 9px;
   padding: 10px 16px; border-bottom: 1px solid var(--border);
@@ -385,8 +415,9 @@ table.tbl { width: 100%; border-collapse: collapse; min-width: 1040px; font-size
 }
 @media (max-width: 760px) {
   /* 侧边栏改为抽屉 */
-  .sidebar { position: fixed; left: -232px; top: 0; bottom: 0; z-index: 90; transition: left .2s; box-shadow: 0 0 24px rgba(15,23,42,.18); }
-  .sidebar.open { left: 0; }
+  /* 手机上不启用"边缘感应"（触屏没有 hover），改用左上角 ☰ 按钮 */
+  .sidebar-hover-zone { display: none; }
+  .sidebar { box-shadow: 0 0 24px rgba(15, 23, 42, .18); }
   .menu-toggle { display: inline-flex !important; }
 
   /* 间距收紧 */
@@ -422,4 +453,12 @@ table.tbl { width: 100%; border-collapse: collapse; min-width: 1040px; font-size
   .photo-item { width: 88px; height: 88px; }
   .modal { max-width: 100%; }
 }
-.menu-toggle { display: none; width: 34px; height: 34px; border: none; background: none; cursor: pointer; align-items: center; justify-content: center; }
+/* ☰ 按钮：桌面端与手机端都显示。
+ * 桌面端侧边栏默认隐藏，此按钮是"划出菜单"之外的另一个入口（点击 = 固定展开/收起）。 */
+.menu-toggle {
+  display: inline-flex; width: 34px; height: 34px;
+  border: none; background: none; cursor: pointer;
+  align-items: center; justify-content: center;
+  border-radius: 8px; color: var(--text);
+}
+.menu-toggle:hover { background: var(--bg); }

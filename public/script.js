@@ -502,6 +502,7 @@ function layout(activeNav, contentHtml) {
   if (canManageUsers()) navItems.push({ key: "logs", href: "#/logs", label: "操作日志", icon: "fileText" });
 
   return `<div class="app">
+    <div class="sidebar-hover-zone" aria-hidden="true"></div>
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand"><img class="brand-logo" src="/logo.jpg" alt=""><span>${esc(APP.companyName)}</span></div>
       <nav class="sidebar-nav">
@@ -549,6 +550,17 @@ function bindLayout() {
   }
   const mt = $("#menuToggle");
   if (mt) mt.onclick = () => $("#sidebar")?.classList.toggle("open");
+
+  // 侧边栏展开时（桌面端点击 ☰ 固定展开），点击空白处或菜单项即收起
+  // —— 因为展开后侧边栏会盖住 ☰ 按钮，所以必须提供"点别处关闭"的出口
+  document.addEventListener("click", (e) => {
+    const sb = $("#sidebar");
+    if (!sb || !sb.classList.contains("open")) return;
+    if (e.target.closest("#menuToggle")) return;     // 点在 ☰ 上：交给上面的 toggle 处理
+    if (e.target.closest(".nav-item")) { sb.classList.remove("open"); return; }
+    if (!sb.contains(e.target)) sb.classList.remove("open");
+  });
+
   refreshReminderBadge();   // 刷新「个人中心」待办角标
 }
 
@@ -581,7 +593,8 @@ function renderLogin() {
       const res = await api.post("/auth?action=login", { userName, password });
       session = { token: res.token, user: res.user, mustChangePassword: res.mustChangePassword };
       saveSession(session);
-      location.hash = "#/dashboard";
+      // 登录后默认进入「个人中心」（可在那里看到自己的待办提醒）
+      location.hash = "#/profile";
       if (res.mustChangePassword) setTimeout(() => openChangePassword(true), 300);
     } catch (err) {
       errEl.textContent = err.message; errEl.style.display = "block";
@@ -1661,6 +1674,6 @@ function router() {
     });
     // 先取公司名等信息，再渲染，避免侧边栏/登录页出现"先空后跳"
     await loadAppInfo();
-    if (!location.hash) location.hash = currentUser() ? "#/dashboard" : "#/login";
+    if (!location.hash) location.hash = currentUser() ? "#/profile" : "#/login";
     router();
   });
