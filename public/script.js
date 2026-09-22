@@ -971,11 +971,14 @@ async function printLedger() {
       <td>${esc(STATUS_LABELS[h.status] || h.status)}</td>
     </tr>`).join("");
 
-  const html = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>矿山安全隐患排查治理台账</title>
+  // 打印稿抬头：公司名来自 config.json（不在代码仓库里），留空则只显示台账标题
+  const orgLine = APP.companyName ? `<div class="org">${esc(APP.companyName)}</div>` : "";
+  const html = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>隐患治理台账</title>
 <style>
   @page { size: A4 landscape; margin: 10mm; }
   * { box-sizing: border-box; }
   body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #111; margin: 0; }
+  .org { font-size: 13pt; text-align: center; font-weight: 600; letter-spacing: 1px; margin-bottom: 2px; }
   h1 { font-size: 17pt; text-align: center; margin: 0 0 6px; letter-spacing: 1px; }
   .meta { text-align: center; font-size: 9pt; color: #555; margin-bottom: 10px; }
   table { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
@@ -985,7 +988,8 @@ async function printLedger() {
   tr { page-break-inside: avoid; }
   thead { display: table-header-group; }
 </style></head><body>
-<h1>矿山安全隐患排查治理台账</h1>
+${orgLine}
+<h1>隐患治理台账</h1>
 <div class="meta">筛选条件：${esc(filterSummaryText())}　｜　共 ${items.length} 条</div>
 <table>
   <thead><tr>
@@ -1028,11 +1032,13 @@ function printHazardDetail(h) {
     return `<tr><th>${esc(label)}</th><td colspan="3"><div class="ph">${imgs}</div></td></tr>`;
   };
 
+  const orgLine2 = APP.companyName ? `<div class="org">${esc(APP.companyName)}</div>` : "";
   const html = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>隐患详情单 ${esc(h.hazardCode)}</title>
 <style>
   @page { size: A4 portrait; margin: 14mm; }
   * { box-sizing: border-box; }
   body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #111; margin: 0; }
+  .org { font-size: 13pt; text-align: center; font-weight: 600; letter-spacing: 1px; margin-bottom: 2px; }
   h1 { font-size: 17pt; text-align: center; margin: 0 0 4px; letter-spacing: 2px; }
   .code { text-align: center; font-size: 10pt; color: #444; margin-bottom: 12px; }
   table { width: 100%; border-collapse: collapse; font-size: 10pt; }
@@ -1045,7 +1051,8 @@ function printHazardDetail(h) {
   .sign { margin-top: 30px; display: flex; justify-content: space-between; font-size: 10.5pt; }
   .sign .line { display: inline-block; border-bottom: 1px solid #333; min-width: 110px; }
 </style></head><body>
-<h1>安全隐患排查治理台账 · 隐患详情单</h1>
+${orgLine2}
+<h1>隐患治理台账 · 隐患详情单</h1>
 <div class="code">隐患编号：<b>${esc(h.hazardCode)}</b>　｜　状态：<span class="badge">${esc(STATUS_LABELS[h.status] || h.status)}</span></div>
 <table>
   ${section("一、基本信息")}
