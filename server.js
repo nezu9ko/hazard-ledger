@@ -91,7 +91,7 @@ const CFG = loadConfig();
 /* 业务枚举（与前端 script.js 中的 LABELS 映射表一一对应）
  * 这些值是写入数据库的"机器码"，改动需同步前端与既有数据 */
 const DEFAULT_INITIAL_PASSWORD = "123456";                                              // 新建用户的初始密码（首次登录强制修改）
-const LEVELS = ["major", "serious", "general", "minor"];                                // 隐患等级：重大/较大/一般/轻微
+const LEVELS = ["major", "general"];                                                      // 隐患等级：重大/一般（二级）
 const CATEGORIES = ["equipment", "operation", "fire", "electrical", "environment", "management"]; // 隐患类别
 const STATUSES = ["pending", "rectifying", "closed"];                                   // 数据库可存的三种状态（overdue 为派生状态，不入库）
 const ROLES = ["entry", "safety_admin", "reviewer", "admin"];                           // 四种角色
@@ -497,7 +497,7 @@ const SCHEMA_COMMENTS = [
   ["COLUMN", "hazard", "location", "隐患部位 / 地点"],
   ["COLUMN", "hazard", "description", "隐患描述"],
   ["COLUMN", "hazard", "category", "隐患类别：equipment设备设施 / operation作业行为 / fire消防安全 / electrical电气安全 / environment环境安全 / management安全管理"],
-  ["COLUMN", "hazard", "level", "隐患等级：major重大 / serious较大 / general一般 / minor轻微"],
+  ["COLUMN", "hazard", "level", "隐患等级：major重大 / general一般"],
   ["COLUMN", "hazard", "rectify_measure", "整改措施"],
   ["COLUMN", "hazard", "rectify_person", "整改责任人"],
   ["COLUMN", "hazard", "rectify_fund", "整改资金（单位：元）"],
@@ -1122,11 +1122,11 @@ async function handleSeed(req, res) {
   const datePart = today.replace(/-/g, "");
   const SAMPLES = [
     { d: -3, inspector: "王建国", location: "主井提升机", description: "主井提升机钢丝绳出现断丝、磨损超标，存在断绳风险", category: "equipment", level: "major", measure: "更换主井提升机钢丝绳并做探伤检测", person: "张伟", fund: "86000", deadline: 14, plan: "断绳时立即停机并撤出井口作业人员" },
-    { d: -2, inspector: "李明", location: "井下中央变电所", description: "井下中央变电所高压电缆外皮老化开裂，存在漏电隐患", category: "electrical", level: "serious", measure: "更换老化电缆并加装绝缘护套", person: "赵强", fund: "32000", deadline: 9 },
+    { d: -2, inspector: "李明", location: "井下中央变电所", description: "井下中央变电所高压电缆外皮老化开裂，存在漏电隐患", category: "electrical", level: "general", measure: "更换老化电缆并加装绝缘护套", person: "赵强", fund: "32000", deadline: 9 },
     { d: -6, inspector: "陈立", location: "2号采场顶板", description: "2号采场顶板出现纵向裂隙，宽约3cm，有冒落风险", category: "environment", level: "major", measure: "增设液压支柱支护，加密顶板沉降监测", person: "孙勇", fund: "120000", deadline: -2, plan: "裂隙扩大立即撤人并启动顶板应急预案" },
     { d: -1, inspector: "周敏", location: "地面办公楼消防通道", description: "办公楼消防通道堆放杂物，堵塞疏散通道", category: "fire", level: "general", measure: "清理通道杂物并设置禁止堆放标识", person: "吴刚", fund: "2000", deadline: 19 },
-    { d: -1, inspector: "郑涛", location: "3号作业面", description: "作业人员高空作业未按规定系挂安全带", category: "operation", level: "serious", measure: "现场立即整改并开展安全教育培训", person: "刘洋", fund: "0", deadline: 7 },
-    { d: -5, inspector: "孙丽", location: "安全管理部", description: "安全生产责任制台账未及时更新，制度版本陈旧", category: "management", level: "minor", measure: "修订安全生产责任制并重新发布", person: "马超", fund: "1000", deadline: 24 },
+    { d: -1, inspector: "郑涛", location: "3号作业面", description: "作业人员高空作业未按规定系挂安全带", category: "operation", level: "general", measure: "现场立即整改并开展安全教育培训", person: "刘洋", fund: "0", deadline: 7 },
+    { d: -5, inspector: "孙丽", location: "安全管理部", description: "安全生产责任制台账未及时更新，制度版本陈旧", category: "management", level: "general", measure: "修订安全生产责任制并重新发布", person: "马超", fund: "1000", deadline: 24 },
     { d: -4, inspector: "冯强", location: "尾矿库排水沟", description: "尾矿库排水沟局部堵塞，雨天易造成积水", category: "environment", level: "general", measure: "疏通排水沟并加固沟壁", person: "杨帆", fund: "15000", deadline: 17 },
   ];
 
@@ -1286,7 +1286,7 @@ function buildXlsx(headers, dataRows, sheetName) {
 }
 
 /* ---------------- 导出（xlsx / csv） ---------------- */
-const LEVEL_LABELS = { major: "重大", serious: "较大", general: "一般", minor: "轻微" };
+const LEVEL_LABELS = { major: "重大", general: "一般" };
 const CATEGORY_LABELS = { equipment: "设备设施", operation: "作业行为", fire: "消防安全", electrical: "电气安全", environment: "环境安全", management: "管理缺陷" };
 const STATUS_LABELS = { pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
 

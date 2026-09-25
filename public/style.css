@@ -303,9 +303,7 @@ table.tbl { width: 100%; border-collapse: collapse; min-width: 1040px; font-size
   font-size: 12px; font-weight: 500; border: 1px solid transparent; white-space: nowrap;
 }
 .lv-major { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
-.lv-serious { background: #ffedd5; color: #c2410c; border-color: #fed7aa; }
 .lv-general { background: #fef9c3; color: #a16207; border-color: #fde68a; }
-.lv-minor { background: #dcfce7; color: #15803d; border-color: #bbf7d0; }
 .st-pending { background: #f3f4f6; color: #4b5563; border-color: #e5e7eb; }
 .st-rectifying { background: #dbeafe; color: #1d4ed8; border-color: #bfdbfe; }
 .st-closed { background: #dcfce7; color: #15803d; border-color: #bbf7d0; }

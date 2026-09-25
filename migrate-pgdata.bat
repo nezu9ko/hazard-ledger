@@ -64,12 +64,17 @@ net start "%PGSVC%" >> "%LOG%" 2>&1
 timeout /t 4 /nobreak >nul
 
   echo [7/8] Verify database connectivity >> "%LOG%"
-  REM 数据库口令从 config.json 读取（不写死在脚本里；cd 到脚本目录保证能找到配置）
-  cd /d "%~dp0"
-  set "NODEEXE=D:\nodejs\node.exe"
-  if not exist "!NODEEXE!" set "NODEEXE=node"
-  for /f "delims=" %%p in ('"!NODEEXE!" -e "process.stdout.write(require('./config.json').db.password||'')" 2^>nul') do set "PGPASSWORD=%%p"
-  if "!PGPASSWORD!"=="" ( echo   ERROR: cannot read db password from config.json >> "%LOG%" & goto :fail )
+    REM 数据库口令从 config.json 读取（不写死在脚本里；cd 到脚本目录保证能找到配置）
+    REM ⚠️ 刻意不用 for /f 承接命令输出：cmd 的 for /f 对单引号与多段引号解析不可靠，
+    REM    会截断命令导致口令读不到。改用「node 写临时文件 → set /p 读取」。
+    cd /d "%~dp0"
+    set "NODEEXE=D:\nodejs\node.exe"
+    if not exist "!NODEEXE!" set "NODEEXE=node"
+    set "PWTMP=%TEMP%\_hl_dbpw2.tmp"
+    "!NODEEXE!" "%~dp0tools\get-db-password.js" > "!PWTMP!" 2>nul
+    set /p PGPASSWORD=<"!PWTMP!"
+    del /q "!PWTMP!" >nul 2>&1
+    if "!PGPASSWORD!"=="" ( echo   ERROR: cannot read db password from config.json >> "%LOG%" & goto :fail )
   "%PGBIN%\psql.exe" -U postgres -h 127.0.0.1 -p 5432 -d hazard_ledger -tAc "select 'DB_OK:'||count(*)||' hazards' from hazard" >> "%LOG%" 2>&1
   set "RC_VERIFY=!errorlevel!"
   set "PGPASSWORD="

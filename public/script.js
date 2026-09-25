@@ -39,12 +39,12 @@ const CATEGORY_LABELS = {
   equipment: "设备设施", operation: "作业行为", fire: "消防安全",
   electrical: "电气安全", environment: "环境安全", management: "管理缺陷",
 };
-const LEVEL_LABELS = { major: "重大", serious: "较大", general: "一般", minor: "轻微" };
+const LEVEL_LABELS = { major: "重大", general: "一般" };
 const STATUS_LABELS = { pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
 /* 列表筛选用：额外支持「未闭环」伪状态（= 非已闭环，由后端 matchStatus 处理） */
 const STATUS_FILTER_LABELS = { unclosed: "未闭环", pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
 const ROLE_LABELS = { entry: "录入人员", safety_admin: "安全管理员", reviewer: "复查人员", admin: "系统管理员" };
-const LEVEL_COLORS = { major: "#dc2626", serious: "#ea580c", general: "#ca8a04", minor: "#16a34a" };
+const LEVEL_COLORS = { major: "#dc2626", general: "#ca8a04" };
 
 /* ---------- 通用工具 ---------- */
 
