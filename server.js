@@ -1306,62 +1306,68 @@ const XLSX_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sty
   + `</styleSheet>`;
 
 /**
- * 生成 XLSX（零依赖，ZIP stored）。
- * 相比最初的单表头版本，这里补齐了**中式表格**真正需要的东西：
- *   ① 样式（标题/表头/正文/说明段/右对齐落款）  ② 合并单元格（标题跨列、区域合并）
- *   ③ 列宽（按印版像素折算）  ④ 自动换行（长文本如整改措施）
- * @param {object} o
- *   o.sheetName {string} 工作表名
- *   o.cols      {number[]} 列宽（字符数，可省略项传 0 走默认）
- *   o.rows      {Array<{h?:number, cells: Array<null|string|number|{v:any,s?:number}>}>} 行
- *   o.merges    {string[]} 合并区域，A1 记法（如 "A1:N1"）
- *   o.freeze    {string}   冻结窗格起点（如 "A3"，可省略）
+ * 生成 XLSX（零依赖，ZIP stored）。**支持多工作表**。
+ * 相比最初的单表头版本，这里补齐了中式表格真正需要的东西：
+ *   ① 样式（标题/表头/正文/说明段/落款/缩进）  ② 合并单元格
+ *   ③ 列宽（按印版像素折算）  ④ 自动换行  ⑤ 行高  ⑥ **多 sheet**
+ * @param {object|object[]} sheets 单个 sheet 定义，或 sheet 数组
+ *   sheet.sheetName {string}  工作表名（Excel 限制 ≤31 字符、不含 : \ / ? * [ ]）
+ *   sheet.cols      {number[]} 列宽（字符数）
+ *   sheet.rows      {Array<{h?:number, cells: Array<null|string|number|{v:any,s?:number}>}>}
+ *   sheet.merges    {string[]} 合并区域（A1 记法）
+ *   sheet.freeze    {string}   冻结窗格起点（如 "A4"）
  */
-function buildXlsx(o) {
-  const rows = o.rows || [];
+function buildXlsx(sheets) {
+  const list = (Array.isArray(sheets) ? sheets : [sheets]).filter(Boolean);
   const NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 
-  // 列宽
-  const colsXml = (o.cols && o.cols.length)
-    ? `<cols>${o.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w > 0 ? w : 8.43}" customWidth="1"/>`).join("")}</cols>`
-    : "";
-
-  // 数据行
-  const rowXml = rows.map((row, ri) => {
-    const r = ri + 1;
-    const cells = (row.cells || []).map((c, ci) => {
-      if (c === null || c === undefined || c === "") return "";   // 空单元格不输出，减体积
-      const v = (typeof c === "object") ? c.v : c;
-      const s = (typeof c === "object" && c.s !== undefined) ? c.s : XS.DEFAULT;
-      if (v === null || v === undefined || v === "") return s ? `<c r="${colName(ci + 1)}${r}" s="${s}"/>` : "";
-      const ref = `${colName(ci + 1)}${r}`;
-      const sAttr = s ? ` s="${s}"` : "";
-      if (typeof v === "number" && isFinite(v)) return `<c r="${ref}"${sAttr}><v>${v}</v></c>`;
-      return `<c r="${ref}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
+  // —— 每个 sheet 生成一份 worksheet XML ——
+  const sheetXmls = list.map((o) => {
+    const rows = o.rows || [];
+    const colsXml = (o.cols && o.cols.length)
+      ? `<cols>${o.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w > 0 ? w : 8.43}" customWidth="1"/>`).join("")}</cols>`
+      : "";
+    const rowXml = rows.map((row, ri) => {
+      const r = ri + 1;
+      const cells = (row.cells || []).map((c, ci) => {
+        if (c === null || c === undefined || c === "") return "";
+        const v = (typeof c === "object") ? c.v : c;
+        const s = (typeof c === "object" && c.s !== undefined) ? c.s : XS.DEFAULT;
+        if (v === null || v === undefined || v === "") return s ? `<c r="${colName(ci + 1)}${r}" s="${s}"/>` : "";
+        const ref = `${colName(ci + 1)}${r}`;
+        const sAttr = s ? ` s="${s}"` : "";
+        if (typeof v === "number" && isFinite(v)) return `<c r="${ref}"${sAttr}><v>${v}</v></c>`;
+        return `<c r="${ref}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
+      }).join("");
+      const hAttr = row.h ? ` ht="${row.h}" customHeight="1"` : "";
+      return `<row r="${r}"${hAttr}>${cells}</row>`;
     }).join("");
-    const hAttr = row.h ? ` ht="${row.h}" customHeight="1"` : "";
-    return `<row r="${r}"${hAttr}>${cells}</row>`;
+    const mergesXml = (o.merges && o.merges.length)
+      ? `<mergeCells count="${o.merges.length}">${o.merges.map((m) => `<mergeCell ref="${m}"/>`).join("")}</mergeCells>`
+      : "";
+    const freezeXml = o.freeze
+      ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="${Number(o.freeze.replace(/\D/g, "")) - 1}" topLeftCell="${o.freeze}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
+      : "";
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS}">`
+      + freezeXml + colsXml + `<sheetData>${rowXml}</sheetData>` + mergesXml + `</worksheet>`;
+  });
+
+  // —— workbook / rels / content-types 按 sheet 数量动态拼 ——
+  const sheetTags = list.map((o, i) => {
+    // 工作表名做一次清洗：Excel 不允许 : \ / ? * [ ]，且长度 ≤31
+    const nm = String(o.sheetName || `Sheet${i + 1}`).replace(/[:\\/?*[\]]/g, "_").slice(0, 31);
+    return `<sheet name="${xmlEsc(nm)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`;
   }).join("");
-
-  const mergesXml = (o.merges && o.merges.length)
-    ? `<mergeCells count="${o.merges.length}">${o.merges.map((m) => `<mergeCell ref="${m}"/>`).join("")}</mergeCells>`
-    : "";
-  const freezeXml = o.freeze
-    ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="${Number(o.freeze.replace(/\D/g, "")) - 1}" topLeftCell="${o.freeze}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
-    : "";
-
-  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS}">`
-    + freezeXml + colsXml + `<sheetData>${rowXml}</sheetData>` + mergesXml + `</worksheet>`;
-
-  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xmlEsc(o.sheetName || "Sheet1")}" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+  const styleRid = `rId${list.length + 1}`;
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheetTags}</sheets></workbook>`;
   const wbRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
-    + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>`
-    + `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+    + list.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("")
+    + `<Relationship Id="${styleRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
   const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
   const ct = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">`
     + `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>`
     + `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>`
-    + `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+    + list.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")
     + `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`;
 
   return zipStore([
@@ -1370,7 +1376,7 @@ function buildXlsx(o) {
     { name: "xl/workbook.xml", data: Buffer.from(workbook, "utf8") },
     { name: "xl/_rels/workbook.xml.rels", data: Buffer.from(wbRels, "utf8") },
     { name: "xl/styles.xml", data: Buffer.from(XLSX_STYLES, "utf8") },
-    { name: "xl/worksheets/sheet1.xml", data: Buffer.from(sheet, "utf8") },
+    ...sheetXmls.map((xml, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: Buffer.from(xml, "utf8") })),
   ]);
 }
 
@@ -1438,6 +1444,40 @@ function attText(list) {
 /** 像素 → XLSX 字符宽（1 字符 ≈ 7px，下限 5） */
 const pxToW = (px) => Math.max(5, Math.round(((Number(px) || 56) / 7) * 10) / 10);
 
+/** 单行文本占几个"字符宽" —— 中文/全角按 2 算，其余按 1 算 */
+const textWidth = (s) => [...String(s || "")].reduce((n, ch) => n + (/[\u1100-\u115f\u2e80-\ua4cf\ua960-\ua97f\uac00-\ud7ff\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(ch) ? 2 : 1), 0);
+
+/**
+ * 按表头文字自动撑宽列宽，保证**表头每个字都露得出来、不被遮挡**。
+ * 取「印版列宽」与「表头所需宽度」的较大值；表头含换行时按最宽的一行计算。
+ * @param {string[]} headers    表头文字（可含 \n）
+ * @param {number[]} baseWidths 印版折算出的列宽
+ */
+function fitCols(headers, baseWidths) {
+  return headers.map((h, i) => {
+    const need = Math.max(...String(h ?? "").split("\n").map(textWidth)) + 2;   // +2 留内边距
+    return Math.max(Number(baseWidths[i]) || 8.43, need);
+  });
+}
+
+/** 表头行高：按表头最长行数留足高度（每行约 15pt + 上下边距） */
+function headRowHeight(headers) {
+  const maxLines = Math.max(...headers.map((h) => String(h ?? "").split("\n").length));
+  return Math.max(32, maxLines * 15 + 10);
+}
+
+/** 四张表的表头（集中定义，供表头行与列宽自适应共用） */
+const H_NOTICE = ["序号", "被检查单位", "具体地点", "隐患类别", "存在的问题或隐患", "问题或隐患图片",
+  "整改措施", "整改期限", "整改责任人", "整改资金（元）", "复查\n时间", "完成\n情况", "复查人", "备注"];
+const H_CLOSURE = ["序号", "被检查单位", "具体地点", "隐患类别", "存在隐患或问题", "采取的整改措施",
+  "整改期限", "整改责任人", "整改情况", "完成时间", "复查人", "整改前图片", "整改后图片"];
+const H_LEDGER = ["序号", "检查时间", "检查人", "隐患类别", "存在隐患或问题", "整改措施",
+  "整改完成时间", "责任人", "复查时间", "复查人", "复查结果"];
+const H_RAW = ["序号", "日期", "检查部位", "现场具体隐患", "检查人", "备注"];
+
+/** 表头行对象（统一样式 2=表头） */
+const thRow = (headers) => ({ h: headRowHeight(headers), cells: headers.map((v) => ({ v, s: XS.TH })) });
+
 /** 从隐患行取出三张表单共用的值 */
 function formVals(h) {
   return {
@@ -1476,16 +1516,8 @@ function sheetNotice(rows, meta) {
       { v: `${noticeDept()}\n${cnDate(meta.today)}`, s: XS.RIGHT_BOTTOM }, null, null,
     ],
   });
-  // 行3：表头（单行 14 格）
-  out.push({
-    h: 32, cells: [
-      { v: "序号", s: XS.TH }, { v: "被检查单位", s: XS.TH }, { v: "具体地点", s: XS.TH }, { v: "隐患类别", s: XS.TH },
-      { v: "存在的问题或隐患", s: XS.TH }, { v: "问题或隐患图片", s: XS.TH }, { v: "整改措施", s: XS.TH },
-      { v: "整改期限", s: XS.TH }, { v: "整改责任人", s: XS.TH }, { v: "整改资金（元）", s: XS.TH },
-      { v: "复查\n时间", s: XS.TH }, { v: "完成\n情况", s: XS.TH },
-      { v: "复查人", s: XS.TH }, { v: "备注", s: XS.TH },
-    ],
-  });
+  // 行3：表头（单行；行高按换行行数自适应，保证字都露出来）
+  out.push(thRow(H_NOTICE));
   rows.forEach((h, i) => {
     const v = formVals(h);
     out.push({
@@ -1507,7 +1539,7 @@ function sheetNotice(rows, meta) {
   });
   return {
     sheetName: "检查隐患问题整改通知单",
-    cols: [24, 44, 56, 56, 143, 100, 248, 66, 66, 59, 114, 49, 51, 63].map(pxToW),
+    cols: fitCols(H_NOTICE, [24, 44, 56, 56, 143, 100, 248, 66, 66, 59, 114, 49, 51, 63].map(pxToW)),
     rows: out,
     merges: [
       `A1:${colName(NCOL)}1`,
@@ -1536,14 +1568,7 @@ function sheetClosure(rows, meta) {
       { v: `日期：${cnDate(meta.today)}`, s: XS.RIGHT }, null, null, null, null, null,
     ],
   });
-  out.push({
-    h: 32, cells: [
-      { v: "序号", s: XS.TH }, { v: "被检查单位", s: XS.TH }, { v: "具体地点", s: XS.TH }, { v: "隐患类别", s: XS.TH },
-      { v: "存在隐患或问题", s: XS.TH }, { v: "采取的整改措施", s: XS.TH }, { v: "整改期限", s: XS.TH },
-      { v: "整改责任人", s: XS.TH }, { v: "整改情况", s: XS.TH }, { v: "完成时间", s: XS.TH },
-      { v: "复查人", s: XS.TH }, { v: "整改前图片", s: XS.TH }, { v: "整改后图片", s: XS.TH },
-    ],
-  });
+  out.push(thRow(H_CLOSURE));
   rows.forEach((h, i) => {
     const v = formVals(h);
     out.push({
@@ -1567,7 +1592,7 @@ function sheetClosure(rows, meta) {
   out.push({ h: 20, cells: [{ v: "", s: XS.NOTE }] });
   return {
     sheetName: "检查问题销号申请单",
-    cols: [24, 95, 70, 56, 200, 280, 60, 70, 60, 80, 60, 90, 90].map(pxToW),
+    cols: fitCols(H_CLOSURE, [24, 95, 70, 56, 200, 280, 60, 70, 60, 80, 60, 90, 90].map(pxToW)),
     rows: out,
     merges: [
       `A1:${colName(NCOL)}1`,
@@ -1585,13 +1610,7 @@ function sheetLedger(rows, meta) {
   const out = [];
   out.push({ h: 34, cells: [{ v: "安全隐患整改治理台账", s: XS.TITLE }] });
   out.push({ cells: [{ v: `单位：${ORG}`, s: XS.NOTE }] });
-  out.push({
-    h: 30, cells: [
-      { v: "序号", s: XS.TH }, { v: "检查时间", s: XS.TH }, { v: "检查人", s: XS.TH }, { v: "隐患类别", s: XS.TH },
-      { v: "存在隐患或问题", s: XS.TH }, { v: "整改措施", s: XS.TH }, { v: "整改完成时间", s: XS.TH },
-      { v: "责任人", s: XS.TH }, { v: "复查时间", s: XS.TH }, { v: "复查人", s: XS.TH }, { v: "复查结果", s: XS.TH },
-    ],
-  });
+  out.push(thRow(H_LEDGER));
   rows.forEach((h, i) => {
     const v = formVals(h);
     out.push({
@@ -1605,7 +1624,7 @@ function sheetLedger(rows, meta) {
   });
   return {
     sheetName: "安全隐患整改治理台账",
-    cols: [44, 114, 119, 119, 236, 338, 116, 67, 116, 67, 73].map(pxToW),
+    cols: fitCols(H_LEDGER, [44, 114, 119, 119, 236, 338, 116, 67, 116, 67, 73].map(pxToW)),
     rows: out,
     merges: [`A1:${colName(NCOL)}1`, `A2:${colName(NCOL)}2`],
   };
@@ -1618,12 +1637,7 @@ function sheetRaw(rows) {
   const NCOL = 6;
   const out = [];
   out.push({ h: 34, cells: [{ v: "原始检查记录表", s: XS.TITLE }] });
-  out.push({
-    h: 30, cells: [
-      { v: "序号", s: XS.TH }, { v: "日期", s: XS.TH }, { v: "检查部位", s: XS.TH },
-      { v: "现场具体隐患", s: XS.TH }, { v: "检查人", s: XS.TH }, { v: "备注", s: XS.TH },
-    ],
-  });
+  out.push(thRow(H_RAW));
   rows.forEach((h, i) => {
     out.push({
       h: 46, cells: [
@@ -1637,11 +1651,18 @@ function sheetRaw(rows) {
   out.push({ h: 30, cells: [{ v: "检查人员签字：", s: XS.NOTE }] });
   return {
     sheetName: "原始检查记录",
-    cols: [44, 114, 130, 380, 120, 160].map(pxToW),
+    cols: fitCols(H_RAW, [44, 114, 130, 380, 120, 160].map(pxToW)),
     rows: out,
     merges: [`A1:F1`, `A${foot}:F${foot}`],
   };
 }
+
+/**
+ * ⑤ 全部表单（合并导出）
+ *  把四张表放进**同一个工作簿**，用 sheet 区分 —— 与公司印版工作簿的结构一致。
+ *  sheet 顺序也照印版：原始检查记录 → 整改通知单 → 销号申请单 → 登记台账。
+ */
+const sheetAll = (rows, meta) => [sheetRaw(rows, meta), sheetNotice(rows, meta), sheetClosure(rows, meta), sheetLedger(rows, meta)];
 
 /**
  * 导出隐患台账。支持与列表一致的筛选参数。
@@ -1656,14 +1677,17 @@ async function handleExport(res, url, user) {
   const format = (q.get("format") || "xlsx").toLowerCase();
   const today = localDateStr();
 
-  // template：四套纸质表单；未指定则导出旧的扁平台账
+  // template：四张纸质表单 + 合并导出；未指定则导出旧的扁平台账
   const TEMPLATE_NAMES = {
+    all: "安全检查隐患问题整改通知单、销号单、登记表",
     notice: "检查问题整改通知单",
     closure: "检查问题销号申请单",
     ledger: "安全隐患整改治理台账",
     raw: "原始检查记录表",
   };
-  const TEMPLATE_BUILDERS = { notice: sheetNotice, closure: sheetClosure, ledger: sheetLedger, raw: sheetRaw };
+  const TEMPLATE_BUILDERS = {
+    all: sheetAll, notice: sheetNotice, closure: sheetClosure, ledger: sheetLedger, raw: sheetRaw,
+  };
   const tRaw = (q.get("template") || "").trim().toLowerCase();
   const template = TEMPLATE_BUILDERS[tRaw] ? tRaw : "";
 

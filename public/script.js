@@ -831,6 +831,7 @@ function gotoLedger(statusFilter) {
  * key 必须与 server.js 的 TEMPLATE_NAMES 一致；key 为空串 = 旧版扁平明细表。
  */
 const EXPORT_TEMPLATES = [
+  { key: "all", label: "全部表单（一份文件）", hint: "4 个 sheet · 原始记录/通知单/销号单/登记台账" },
   { key: "notice", label: "检查问题整改通知单", hint: "14 列 · 含检查说明段与签发落款" },
   { key: "closure", label: "检查问题销号申请单", hint: "13 列 · 含整改前后图片列" },
   { key: "ledger", label: "安全隐患整改治理台账", hint: "11 列 · 隐患登记台账" },
