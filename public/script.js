@@ -1469,7 +1469,9 @@ async function renderHazardDetail(id) {
         <div class="field"><label>复查日期 <span class="req">*</span></label><input class="input" type="date" id="reviewDate" value="${todayStr()}"></div>
       </div>
       <div class="form-grid" style="margin-top:16px">
-        <div class="field span-2"><label>复查人员 <span class="req">*</span></label><input class="input" id="reviewer" placeholder="请输入复查人员姓名"></div>
+        <div class="field span-2"><label>复查人员 <span class="req">*</span></label>
+          <select class="select" id="reviewer"><option value="">请选择复查人员</option></select>
+          <div style="font-size:12px;color:#9ca3af;margin-top:4px">默认取本隐患的排查人员，可改选其他人</div></div>
         <div class="field span-2"><label>复查结果 <span class="req">*</span></label><textarea class="textarea" id="reviewResult" placeholder="请输入复查结果描述"></textarea></div>
       </div>
       <div class="err-text" id="reviewErr" style="display:none;margin-top:12px"></div>
@@ -1564,29 +1566,53 @@ async function renderHazardDetail(id) {
               <input class="input" type="number" min="0" id="rfFund" placeholder="可填 0，事后在台账里可改"></div>
             <div class="field"><label>应急预案</label>
               <textarea class="textarea" id="rfEmergency" placeholder="整改期间的临时管控措施（选填）"></textarea></div>
+            ${photoUploaderHtml("rfPhotos", "整改照片", `整改后的现场照片，最多 ${MAX_PHOTOS} 张；也可先提交、在复查前补充`)}
             <div class="err-text" id="rfErr" style="display:none"></div>`,
           confirmText: "提交并开始整改",
-          onConfirm: async (overlay) => {
-            const measure = $("#rfMeasure", overlay).value.trim();
-            const fund = $("#rfFund", overlay).value;
-            const errEl = $("#rfErr", overlay);
+          onConfirm: async (overlayEl) => {
+            const measure = $("#rfMeasure", overlayEl).value.trim();
+            const fund = $("#rfFund", overlayEl).value;
+            const errEl = $("#rfErr", overlayEl);
             const fail = (m) => { errEl.textContent = m; errEl.style.display = "block"; return false; };
             if (!measure) return fail("请填写整改措施");
             if (fund !== "" && (Number(fund) < 0 || Number.isNaN(Number(fund)))) return fail("整改资金不能为负数");
             try {
               await api.patch(`/hazards/${id}`, {
                 action: "start-rectify", rectifyMeasure: measure, rectifyFund: fund,
-                emergencyPlan: $("#rfEmergency", overlay).value.trim() || undefined,
+                emergencyPlan: $("#rfEmergency", overlayEl).value.trim() || undefined,
+                rectifyPhotos: rfPhotos.payload(),
               });
             } catch (err) { return fail(err.message); }
             toast("已开始整改", "整改信息已保存，状态：待整改 → 整改中");
             renderHazardDetail(id);
           },
         });
+        // 弹窗已插入文档，这里初始化照片上传控件（其内部按 id 全局查找元素）
+        const rfPhotos = initPhotoUploader("rfPhotos");
       };
     }
   const rf = $("#reviewForm");
   if (rf) {
+    // 复查人员：默认取本隐患的**排查（录入）人员**，同时提供系统用户列表供改选。
+    // 排查人是自由文本，若不在用户列表里就把它作为一项补进去，保证默认值可见可选。
+    void (async () => {
+      const sel = $("#reviewer");
+      if (!sel) return;
+      const def = String(h.inspector || "").trim();
+      try {
+        const r = await api.get("/user-options");
+        const items = (r.items || []).map((u) => u.userName);
+        const names = def && !items.includes(def) ? [def, ...items] : items;
+        sel.innerHTML = `<option value="">请选择复查人员</option>`
+          + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+      } catch {
+        sel.innerHTML = `<option value="">请选择复查人员</option>`
+          + (def ? `<option value="${esc(def)}">${esc(def)}</option>` : "");
+      }
+      if (def) sel.value = def;                        // 默认选中录入人员
+      else if (currentUser()?.userName) sel.value = currentUser().userName;
+    })();
+
     rf.onsubmit = async (e) => {
       e.preventDefault();
       const errEl = $("#reviewErr"); errEl.style.display = "none";

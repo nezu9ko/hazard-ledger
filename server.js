@@ -1064,15 +1064,24 @@ async function handleHazards(req, res, url, id, user) {
       const fund = (fundRaw === undefined || fundRaw === null || String(fundRaw).trim() === "") ? 0 : Number(fundRaw);
       if (Number.isNaN(fund) || fund < 0) return badRequest(res, "整改资金格式错误");
       const emergency = body.emergencyPlan ? String(body.emergencyPlan).trim() : null;
+      // 整改照片：责任人可在填整改信息时一并上传（也可之后在复查前补充）
+      const hasPhotos = body.rectifyPhotos !== undefined;
+      const rPhotos = hasPhotos ? normalizePhotos(body.rectifyPhotos) : null;
 
       await pool.query(
-        `UPDATE hazard SET status='rectifying', rectify_measure=$1, rectify_fund=$2, emergency_plan=$3,
-          updated_at=NOW() WHERE id=$4`,
-        [measure, String(fund), emergency, id]
+        hasPhotos
+          ? `UPDATE hazard SET status='rectifying', rectify_measure=$1, rectify_fund=$2, emergency_plan=$3,
+               rectify_photos=$4, updated_at=NOW() WHERE id=$5`
+          : `UPDATE hazard SET status='rectifying', rectify_measure=$1, rectify_fund=$2, emergency_plan=$3,
+               updated_at=NOW() WHERE id=$4`,
+        hasPhotos
+          ? [measure, String(fund), emergency, rPhotos.length ? JSON.stringify(rPhotos) : null, id]
+          : [measure, String(fund), emergency, id]
       );
       await logOp(user, "start_rectify", {
         targetType: "hazard", targetId: id, targetCode: row.hazard_code,
-        detail: `填写整改信息并开始整改（措施 ${measure.slice(0, 30)}｜资金 ${fund} 元）`,
+        detail: `填写整改信息并开始整改（措施 ${measure.slice(0, 30)}｜资金 ${fund} 元`
+          + (hasPhotos && rPhotos.length ? `｜整改照片 ${rPhotos.length} 张` : "") + "）",
       });
       const updated = await pool.query("SELECT * FROM hazard WHERE id = $1", [id]);
       return sendJson(res, rowToHazard(updated.rows[0], today));
