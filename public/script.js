@@ -827,12 +827,25 @@ function gotoLedger(statusFilter) {
  * 表格整体可点击进详情；行内「删除」按钮做了事件隔离（见 loadList）。
  */
 /**
- * 导出隐患台账。
- * @param ids 传 id 数组时只导出这些记录（供台账页「导出选中」使用）；
- *            传 null 时按 listState 里的当前筛选条件导出全部。
+ * 可导出的表单格式。
+ * key 必须与 server.js 的 TEMPLATE_NAMES 一致；key 为空串 = 旧版扁平明细表。
  */
-async function exportHazards(ids) {
+const EXPORT_TEMPLATES = [
+  { key: "notice", label: "检查问题整改通知单", hint: "14 列 · 含检查说明段与签发落款" },
+  { key: "closure", label: "检查问题销号申请单", hint: "13 列 · 含整改前后图片列" },
+  { key: "ledger", label: "安全隐患整改治理台账", hint: "11 列 · 隐患登记台账" },
+  { key: "", label: "隐患完整明细", hint: "17 列扁平表 · 便于二次统计" },
+];
+
+/**
+ * 导出隐患台账。
+ * @param ids      传 id 数组时只导出这些记录（供「导出选中」使用）；
+ *                 传 null 时按 listState 里的当前筛选条件导出全部。
+ * @param template 表单格式：notice | closure | ledger | ""（扁平明细）
+ */
+async function exportHazards(ids, template = "ledger") {
   const qs = new URLSearchParams({ format: "xlsx" });
+  if (template) qs.set("template", template);
   if (ids && ids.length) qs.set("ids", ids.join(","));
   else ["level", "category", "status", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
   const res = await fetch(`/api/export?${qs.toString()}`, {
@@ -844,12 +857,50 @@ async function exportHazards(ids) {
     },
   });
   if (!res.ok) throw new Error("导出失败");
+  // 文件名优先取服务端下发的（含表单名与日期），取不到则本地兜底
+  let fname = `隐患台账_${todayStr()}.xlsx`;
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  if (m) { try { fname = decodeURIComponent(m[1]); } catch { /* 忽略 */ } }
   const blob = await res.blob();
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `隐患台账_${todayStr()}${ids && ids.length ? `_选中${ids.length}条` : ""}.xlsx`;
+  a.download = fname;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+/**
+ * 弹出「选择导出格式」菜单。
+ * @param anchor 触发按钮，菜单定位在其正下方
+ * @param getIds 回调：返回要导出的 id 数组；返回 null 表示按当前筛选条件导出
+ */
+function openExportMenu(anchor, getIds) {
+  document.querySelectorAll(".export-menu").forEach((el) => el.remove());
+  const menu = document.createElement("div");
+  menu.className = "export-menu";
+  menu.innerHTML = EXPORT_TEMPLATES.map((t) => `<button type="button" data-tpl="${t.key}">`
+    + `<span class="em-label">${esc(t.label)}</span><span class="em-hint">${esc(t.hint)}</span></button>`).join("");
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${r.bottom + 6}px`;
+
+  const close = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener("click", close); } };
+  setTimeout(() => document.addEventListener("click", close), 0);
+
+  menu.querySelectorAll("button").forEach((b) => {
+    b.onclick = async () => {
+      const tpl = b.dataset.tpl;
+      const label = (EXPORT_TEMPLATES.find((t) => t.key === tpl) || {}).label || "台账";
+      menu.remove();
+      b.disabled = true;
+      try {
+        await exportHazards(getIds(), tpl);
+        toast("导出成功", `已生成《${label}》`);
+      } catch (err) { toast("导出失败", err.message, "err"); }
+    };
+  });
 }
 
 async function renderHazardList() {
@@ -859,7 +910,7 @@ async function renderHazardList() {
         <div><div class="page-title">隐患台账</div><div class="page-sub">排查发现 — 登记上报 — 整改实施 — 复查验收 — 闭环销号</div></div>
         <div style="display:flex;gap:10px">
           <button class="btn btn-outline" id="btnPrint">${icon("printer")}打印</button>
-          <button class="btn btn-outline" id="btnExport">${icon("download")}导出 Excel</button>
+          <button class="btn btn-outline" id="btnExport">${icon("download")}导出表单</button>
           <a class="btn btn-primary" href="#/hazards/new">${icon("plus")}新增隐患</a>
         </div>
       </div>
@@ -900,20 +951,8 @@ async function renderHazardList() {
     }
   };
 
-  $("#btnExport").onclick = async () => {
-    const btn = $("#btnExport");
-    btn.disabled = true;
-    const old = btn.innerHTML;
-    btn.textContent = "导出中...";
-    try {
-      await exportHazards(null);
-      toast("导出成功", "已按当前筛选条件导出");
-    } catch (err) {
-      toast("导出失败", err.message, "err");
-    } finally {
-      btn.disabled = false; btn.innerHTML = old;
-    }
-  };
+  // 导出：点一下弹出格式菜单（三套纸质表单 + 扁平明细），按当前筛选条件导出
+  $("#btnExport").onclick = () => openExportMenu($("#btnExport"), () => null);
 
   $("#btnQuery").onclick = () => {
     listState.level = $("#fLevel").value; listState.category = $("#fCategory").value;
@@ -1004,16 +1043,11 @@ async function loadList() {
     if (allBox) allBox.onchange = () => { picks().forEach((c) => { c.checked = allBox.checked; }); sync(); };
     $("#batchClear", card).onclick = () => { picks().forEach((c) => { c.checked = false; }); sync(); };
 
-    $("#batchExport", card).onclick = async () => {
+    // 导出选中：同样先选格式，再只导出勾选的行
+    $("#batchExport", card).onclick = () => {
       const sel = selected();
       if (!sel.length) return;
-      const btn = $("#batchExport", card);
-      btn.disabled = true;
-      try {
-        await exportHazards(sel.map((s) => s.id));
-        toast("导出成功", `已导出选中的 ${sel.length} 条`);
-      } catch (err) { toast("导出失败", err.message, "err"); }
-      finally { btn.disabled = false; }
+      openExportMenu($("#batchExport", card), () => sel.map((s) => s.id));
     };
 
     $("#batchDelete", card).onclick = () => {
