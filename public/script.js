@@ -132,6 +132,14 @@ function readAsDataUrl(file) {
   });
 }
 
+/**
+ * 附件项 → {u,n}。
+ * ⚠️ 附件在库里可能有两种形态：旧版纯字符串 "/uploads/x.jpg"、新版对象 {u,n}。
+ * 任何消费附件的地方都必须先过这个函数 —— 直接拿数组元素当字符串拼 URL
+ * 会得到 "http://…[object Object]"（详情单打印曾因此显示不出图片）。
+ */
+const attOf = (x) => (typeof x === "string" ? { u: x, n: "" } : { u: (x && x.u) || "", n: (x && x.n) || "" });
+
 // 附件上传控件：选择即上传，返回 state（含 payload() 供提交）
 function photoUploaderHtml(key, label, hint) {
   return `<div class="field span-2">
@@ -198,10 +206,9 @@ function initPhotoUploader(key) {
 }
 
 /** 详情页附件展示（兼容旧数据里的纯字符串） */
-function photoViewer(label, urls) {
-  const list = (Array.isArray(urls) ? urls : [])
-    .map((x) => (typeof x === "string" ? { u: x, n: "" } : { u: x && x.u, n: (x && x.n) || "" }))
-    .filter((a) => a.u);
+  function photoViewer(label, urls) {
+    // 统一走 attOf()：附件可能是 {u,n} 对象，也可能是旧的纯字符串
+    const list = (Array.isArray(urls) ? urls : []).map(attOf).filter((a) => a.u);
   return `<div class="info-item full"><div class="i-label">${esc(label)}</div>
     <div class="i-value">${list.length
       ? `<div class="photo-grid">${list.map((a) => (isImageUrl(a.u)
@@ -1272,6 +1279,7 @@ function filterSummaryText() {
  * 见上方 printForm() / sheetSpecToTable()。 */
 
 /* ---------- 打印单条隐患详情单 ---------- */
+
 function printHazardDetail(h) {
   showPrintHintOnce();
   const v = (x) => (x === null || x === undefined || String(x).trim() === "" ? "—" : String(x));
@@ -1280,9 +1288,13 @@ function printHazardDetail(h) {
   const row2 = (l1, v1, l2, v2) => `<tr><th>${esc(l1)}</th><td>${esc(v(v1))}</td><th>${esc(l2)}</th><td>${esc(v(v2))}</td></tr>`;
   const rowFull = (l, val) => `<tr><th>${esc(l)}</th><td colspan="3" class="pre">${esc(v(val))}</td></tr>`;
   const photoRow = (label, urls) => {
-    const list = Array.isArray(urls) ? urls : [];
+    // 统一走 attOf()：附件可能是 {u,n} 对象，也可能是旧的纯字符串
+    const list = (Array.isArray(urls) ? urls : []).map(attOf).filter((a) => a.u);
     if (list.length === 0) return `<tr><th>${esc(label)}</th><td colspan="3">—</td></tr>`;
-    const imgs = list.map((u) => `<img src="${esc(location.origin + u)}" alt="">`).join("");
+    const imgs = list.map((a) => (isImageUrl(a.u)
+      ? `<img src="${esc(location.origin + a.u)}" alt="${esc(a.n)}">`
+      // 非图片附件（PDF/Word）在打印稿里显示为文件名，不硬塞进 <img>
+      : `<span class="att">${esc(a.n || a.u.split("/").pop() || "附件")}</span>`)).join("");
     return `<tr><th>${esc(label)}</th><td colspan="3"><div class="ph">${imgs}</div></td></tr>`;
   };
 
@@ -1301,6 +1313,7 @@ function printHazardDetail(h) {
   tr.sec td { background: #e2e8f0; font-weight: 700; letter-spacing: 1px; }
   td.pre { white-space: pre-wrap; line-height: 1.6; }
   .ph img { height: 88px; border: 1px solid #999; margin: 3px 5px 3px 0; vertical-align: middle; }
+  .ph .att { display: inline-block; border: 1px solid #999; border-radius: 3px; padding: 2px 8px; margin: 3px 5px 3px 0; font-size: 9.5pt; }
   .badge { display: inline-block; border: 1px solid #666; border-radius: 3px; padding: 0 6px; font-size: 9.5pt; }
   .sign { margin-top: 30px; display: flex; justify-content: space-between; font-size: 10.5pt; }
   .sign .line { display: inline-block; border-bottom: 1px solid #333; min-width: 110px; }
