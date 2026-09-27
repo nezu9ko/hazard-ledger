@@ -939,19 +939,8 @@ async function renderHazardList() {
   $("#fStatus").value = listState.status; $("#fKeyword").value = listState.keyword;
   $("#fFrom").value = listState.dateFrom; $("#fTo").value = listState.dateTo;
 
-  $("#btnPrint").onclick = async () => {
-    const btn = $("#btnPrint");
-    btn.disabled = true;
-    const old = btn.innerHTML;
-    btn.textContent = "准备中...";
-    try {
-      await printLedger();
-    } catch (err) {
-      toast("打印失败", err.message, "err");
-    } finally {
-      btn.disabled = false; btn.innerHTML = old;
-    }
-  };
+  // 打印：点一下弹出格式菜单（与导出同一套表单版式），按当前筛选条件打印
+  $("#btnPrint").onclick = () => openPrintMenu($("#btnPrint"));
 
   // 导出：点一下弹出格式菜单（三套纸质表单 + 扁平明细），按当前筛选条件导出
   $("#btnExport").onclick = () => openExportMenu($("#btnExport"), () => null);
@@ -1093,7 +1082,160 @@ async function loadList() {
   if (next) next.onclick = () => { listState.page = Math.min(totalPages, listState.page + 1); loadList(); };
 }
 
-/* ---------- 打印台账 ---------- */
+/* ---------- 打印：与导出**共用同一套版式定义** ---------- */
+
+/** 样式索引 → CSS 类名（与服务端 XS 一一对应） */
+const PRINT_XS = { 0: "", 1: "p-title", 2: "p-th", 3: "p-c", 4: "p-l", 5: "p-note", 6: "p-bold", 7: "p-r", 8: "p-rb", 9: "p-note", 10: "p-rs" };
+const colToNum = (s) => [...s].reduce((n, ch) => n * 26 + (ch.charCodeAt(0) - 64), 0);
+
+/**
+ * 把服务端下发的版式规格渲染成可打印的 HTML。
+ * 之所以从服务端取规格、而不是在打印里另写一套表头：
+ *   **保证「打印件」与「导出件」格式完全一致**，避免两处各改各的、日久跑偏。
+ */
+function sheetSpecToTable(sheet) {
+  const ncol = Math.max(
+    ...(sheet.rows || []).map((r) => (r.cells || []).length),
+    (sheet.cols || []).length,
+    1,
+  );
+  // 合并区：解析成「左上角格 → 跨度」+「被覆盖格（跳过）」
+  const span = {}; const covered = new Set();
+  for (const m of sheet.merges || []) {
+    const mm = /^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(m);
+    if (!mm) continue;
+    const c1 = colToNum(mm[1]); const r1 = +mm[2]; const c2 = colToNum(mm[3]); const r2 = +mm[4];
+    span[`${r1},${c1}`] = { rs: r2 - r1 + 1, cs: c2 - c1 + 1 };
+    for (let r = r1; r <= r2; r += 1) {
+      for (let c = c1; c <= c2; c += 1) if (!(r === r1 && c === c1)) covered.add(`${r},${c}`);
+    }
+  }
+  // 图片：按 (行,列) 归位
+  const imgAt = {};
+  for (const im of sheet.images || []) {
+    const k = `${(im.row || 0) + 1},${(im.col || 0) + 1}`;
+    (imgAt[k] = imgAt[k] || []).push(im);
+  }
+  const trs = (sheet.rows || []).map((row, ri) => {
+    const r = ri + 1;
+    const tds = [];
+    for (let c = 1; c <= ncol; c += 1) {
+      if (covered.has(`${r},${c}`)) continue;
+      const cell = (row.cells || [])[c - 1];
+      const obj = (cell && typeof cell === "object") ? cell : { v: cell, s: 0 };
+      const cls = PRINT_XS[obj.s || 0] || "";
+      const sp = span[`${r},${c}`];
+      const attrs = `${sp && sp.cs > 1 ? ` colspan="${sp.cs}"` : ""}${sp && sp.rs > 1 ? ` rowspan="${sp.rs}"` : ""}`;
+      const imgs = imgAt[`${r},${c}`] || [];
+      const content = imgs.length
+        ? imgs.map((im) => `<img class="p-img" src="${esc(im.url)}" alt="">`).join("")
+        : esc(obj.v === null || obj.v === undefined ? "" : obj.v).replace(/\n/g, "<br>");
+      tds.push(`<td class="${cls}"${attrs}>${content}</td>`);
+    }
+    return `<tr>${tds.join("")}</tr>`;
+  }).join("");
+  return `<table class="p-tbl">${trs}</table>`;
+}
+
+const PRINT_CSS = `
+  @page { size: A4 landscape; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", "SimSun", serif; color: #000; margin: 0; }
+  .p-tbl { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8pt; }
+  .p-tbl td { border: 1px solid #666; padding: 3px 4px; vertical-align: middle; word-break: break-all; }
+  .p-title { font-size: 15pt; font-weight: 700; text-align: center; border: none !important; padding: 6px 0 !important; }
+  .p-th { font-weight: 700; text-align: center; background: #f1f1f1; }
+  .p-c { text-align: center; }
+  .p-l { text-align: left; }
+  .p-note { text-align: left; vertical-align: top; border: none !important; font-size: 9pt; }
+  .p-bold { font-weight: 700; }
+  .p-r { text-align: right; border: none !important; }
+  .p-rb { text-align: right; vertical-align: bottom; border: none !important; font-size: 9pt; }
+  .p-rs { text-align: right; border: none !important; padding-right: 5ch !important; }
+  .p-img { max-height: 62px; max-width: 46%; margin: 0 1px; vertical-align: middle; }
+  tr { page-break-inside: avoid; }
+  .p-sheet { page-break-after: always; }
+  .p-sheet:last-child { page-break-after: auto; }
+`;
+
+/**
+ * 打印指定格式的表单。
+ * @param template "" | notice | closure | ledger | raw | all
+ */
+async function printForm(template) {
+  const qs = new URLSearchParams({ format: "json" });
+  if (template) qs.set("template", template);
+  ["level", "category", "status", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
+  const res = await fetch(`/api/export?${qs.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+      "X-Operator-Id": session?.user?.id || "",
+      "X-Operator": encodeURIComponent(session?.user?.userName || ""),
+      "X-Operator-Role": session?.user?.role || "",
+    },
+  });
+  if (!res.ok) throw new Error("获取打印数据失败");
+  const { sheets } = await res.json();
+  if (!sheets || !sheets.length) throw new Error("无可打印数据");
+  showPrintHintOnce();
+
+  const body = sheets.map((s, i) => `<div class="p-sheet${sheets.length > 1 ? "" : " p-single"}">`
+    + (sheets.length > 1 ? `<div class="p-sheetname">${esc(s.sheetName)}</div>` : "")
+    + sheetSpecToTable(s) + "</div>").join("");
+  const html = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>${esc(sheets[0].sheetName || "打印")}</title>`
+    + `<style>${PRINT_CSS}.p-sheetname{font-size:9pt;color:#666;margin:0 0 4px;}</style></head><body>${body}</body></html>`;
+
+  const iframe = document.createElement("iframe");
+  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+  document.body.appendChild(iframe);
+  const doc = iframe.contentWindow.document;
+  doc.open(); doc.write(html); doc.close();
+  setTimeout(() => {
+    try {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    } finally {
+      setTimeout(() => iframe.remove(), 1500);
+    }
+  }, 500);   // 留足时间让图片加载
+}
+
+/** 可打印的格式（比导出少一项「隐患完整明细」的重复入口，合并导出改用「全部表单」） */
+const PRINT_TEMPLATES = [
+  { key: "all", label: "全部表单（4 张，分页打印）", hint: "原始记录/通知单/销号单/登记台账" },
+  { key: "notice", label: "检查问题整改通知单", hint: "带检查说明段与签发落款" },
+  { key: "closure", label: "检查问题销号申请单", hint: "含整改前后照片" },
+  { key: "ledger", label: "安全隐患整改治理台账", hint: "隐患登记台账" },
+  { key: "raw", label: "原始检查记录表", hint: "现场检查原始记录" },
+  { key: "", label: "隐患完整明细", hint: "17 列扁平表" },
+];
+
+/**
+ * 弹出打印格式菜单（与导出菜单同一套交互）。
+ * @param anchor 触发按钮
+ */
+function openPrintMenu(anchor) {
+  document.querySelectorAll(".export-menu").forEach((el) => el.remove());
+  const menu = document.createElement("div");
+  menu.className = "export-menu";
+  menu.innerHTML = PRINT_TEMPLATES.map((t) => `<button type="button" data-tpl="${t.key}">`
+    + `<span class="em-label">${esc(t.label)}</span><span class="em-hint">${esc(t.hint)}</span></button>`).join("");
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${r.bottom + 6}px`;
+  const close = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener("click", close); } };
+  setTimeout(() => document.addEventListener("click", close), 0);
+  menu.querySelectorAll("button").forEach((b) => {
+    b.onclick = async () => {
+      const tpl = b.dataset.tpl;
+      const label = (PRINT_TEMPLATES.find((t) => t.key === tpl) || {}).label || "表单";
+      menu.remove();
+      try { await printForm(tpl); } catch (err) { toast("打印失败", err.message, "err"); }
+      void label;
+    };
+  });
+}
 // 取回当前筛选条件下的全部记录（分页循环）
 async function fetchAllFiltered() {
   const pageSize = 100;
@@ -1124,81 +1266,10 @@ function filterSummaryText() {
   return parts.length ? parts.join("；") : "全部";
 }
 
-/**
- * 打印台账清单。
- * 思路：新建一个隐藏 iframe → document.write 打印专用 HTML → contentWindow.print()。
- * 用 iframe 而不是 window.open，可以避免被浏览器"拦截弹窗"。
- * 打印稿含 A4 横向页面设置、标题、筛选条件与条数，并自动取回**全部**筛选结果
- * （fetchAllFiltered 会分页循环拉取，不受列表每页条数限制）。
- */
-async function printLedger() {
-  const items = await fetchAllFiltered();
-  if (items.length === 0) {
-    toast("无可打印数据", "当前筛选条件下没有隐患记录", "err");
-    return;
-  }
-  showPrintHintOnce();
-
-  const rows = items.map((h, i) => `<tr>
-      <td>${i + 1}</td>
-      <td>${esc(h.hazardCode)}</td>
-      <td>${esc(h.inspectDate)}</td>
-      <td>${esc(h.location)}</td>
-      <td class="d">${esc(h.description)}</td>
-      <td>${esc(CATEGORY_LABELS[h.category] || h.category)}</td>
-      <td>${esc(LEVEL_LABELS[h.level] || h.level)}</td>
-      <td class="d">${esc(h.rectifyMeasure)}</td>
-      <td>${esc(h.rectifyPerson)}</td>
-      <td>${esc(h.rectifyFund)}</td>
-      <td>${esc(h.planDeadline)}</td>
-      <td>${esc(STATUS_LABELS[h.status] || h.status)}</td>
-    </tr>`).join("");
-
-  // 打印稿抬头：公司名来自 config.json（不在代码仓库里），留空则只显示台账标题
-  const orgLine = APP.companyName ? `<div class="org">${esc(APP.companyName)}</div>` : "";
-  const html = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>隐患治理台账</title>
-<style>
-  @page { size: A4 landscape; margin: 10mm; }
-  * { box-sizing: border-box; }
-  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #111; margin: 0; }
-  .org { font-size: 13pt; text-align: center; font-weight: 600; letter-spacing: 1px; margin-bottom: 2px; }
-  h1 { font-size: 17pt; text-align: center; margin: 0 0 6px; letter-spacing: 1px; }
-  .meta { text-align: center; font-size: 9pt; color: #555; margin-bottom: 10px; }
-  table { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
-  th, td { border: 1px solid #999; padding: 4px 5px; vertical-align: top; word-break: break-all; }
-  th { background: #eee; font-weight: 600; }
-  td.d { max-width: 150px; }
-  tr { page-break-inside: avoid; }
-  thead { display: table-header-group; }
-</style></head><body>
-${orgLine}
-<h1>隐患治理台账</h1>
-<div class="meta">筛选条件：${esc(filterSummaryText())}　｜　共 ${items.length} 条</div>
-<table>
-  <thead><tr>
-    <th style="width:3%">序号</th><th style="width:9%">隐患编号</th><th style="width:7%">排查日期</th>
-    <th style="width:9%">所在部位</th><th>隐患描述</th><th style="width:6%">类别</th>
-    <th style="width:5%">等级</th><th>整改措施</th><th style="width:6%">整改责任人</th>
-    <th style="width:7%">整改资金(元)</th><th style="width:7%">计划完成时限</th><th style="width:5%">状态</th>
-  </tr></thead>
-  <tbody>${rows}</tbody>
-</table>
-</body></html>`;
-
-  const iframe = document.createElement("iframe");
-  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
-  document.body.appendChild(iframe);
-  const doc = iframe.contentWindow.document;
-  doc.open(); doc.write(html); doc.close();
-  setTimeout(() => {
-    try {
-      iframe.contentWindow.focus();
-      iframe.contentWindow.print();
-    } finally {
-      setTimeout(() => iframe.remove(), 1500);
-    }
-  }, 350);
-}
+/* 旧版「打印台账清单」（A4 横向 12 列）已废弃：
+ * 它与导出格式不一致，现改为「打印」按钮弹出格式菜单，
+ * 打印件由服务端下发的版式规格渲染 —— 与导出共用同一套定义，格式必然一致。
+ * 见上方 printForm() / sheetSpecToTable()。 */
 
 /* ---------- 打印单条隐患详情单 ---------- */
 function printHazardDetail(h) {

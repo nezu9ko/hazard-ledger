@@ -1321,8 +1321,22 @@ function buildXlsx(sheets) {
   const list = (Array.isArray(sheets) ? sheets : [sheets]).filter(Boolean);
   const NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 
+  // —— 图片：跨表统一编号（media 文件同处一个目录）——
+  let mediaSeq = 0;
+  const mediaParts = [];      // {name, data}
+  const sheetImgs = list.map((o) => (o.images || []).map((im) => {
+    let bytes = null;
+    try { bytes = fs.readFileSync(im.file); } catch { return null; }
+    const ext = path.extname(im.file).toLowerCase();
+    if (!IMG_MIME[ext]) return null;              // pdf/word 等不能嵌入，交给文字兜底
+    const nat = imageSize(bytes) || { w: 200, h: 150 };
+    mediaSeq += 1;
+    mediaParts.push({ name: `xl/media/image${mediaSeq}${ext}`, data: bytes });
+    return { ...im, seq: mediaSeq, ext, nat };
+  }).filter(Boolean));
+
   // —— 每个 sheet 生成一份 worksheet XML ——
-  const sheetXmls = list.map((o) => {
+  const sheetXmls = list.map((o, si) => {
     const rows = o.rows || [];
     const colsXml = (o.cols && o.cols.length)
       ? `<cols>${o.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w > 0 ? w : 8.43}" customWidth="1"/>`).join("")}</cols>`
@@ -1348,9 +1362,39 @@ function buildXlsx(sheets) {
     const freezeXml = o.freeze
       ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="${Number(o.freeze.replace(/\D/g, "")) - 1}" topLeftCell="${o.freeze}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
       : "";
-    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS}">`
-      + freezeXml + colsXml + `<sheetData>${rowXml}</sheetData>` + mergesXml + `</worksheet>`;
+    // 有图片就必须在表末尾引用绘图；<drawing> 必须排在 mergeCells 之后
+    const drawingXml = (sheetImgs[si] || []).length ? `<drawing r:id="rId1"/>` : "";
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`
+      + freezeXml + colsXml + `<sheetData>${rowXml}</sheetData>` + mergesXml + drawingXml + `</worksheet>`;
   });
+
+  // —— 绘图 XML：把图片锚在指定单元格左上角，按设计尺寸摆放 ——
+  const drawXmls = sheetImgs.map((imgs, si) => {
+    if (!imgs.length) return null;
+    const anchors = imgs.map((im, i) => {
+      // 设计尺寸：按行高与列宽留出的空间做等比缩放（每张图片单独算）
+      const w = im.w || 120; const h = im.h || 80;
+      return `<xdr:oneCellAnchor><xdr:from><xdr:col>${im.col}</xdr:col><xdr:colOff>${px2emu(im.offX || 0)}</xdr:colOff>`
+        + `<xdr:row>${im.row}</xdr:row><xdr:rowOff>${px2emu(im.offY || 0)}</xdr:rowOff></xdr:from>`
+        + `<xdr:ext cx="${px2emu(w)}" cy="${px2emu(h)}"/>`
+        + `<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${i + 1}" name="图片${i + 1}"/>`
+        + `<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>`
+        + `<xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId${i + 1}"/>`
+        + `<a:stretch><a:fillRect/></a:stretch></xdr:blipFill>`
+        + `<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${px2emu(w)}" cy="${px2emu(h)}"/></a:xfrm>`
+        + `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>`;
+    }).join("");
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">${anchors}</xdr:wsDr>`;
+  });
+  const drawRels = sheetImgs.map((imgs, si) => {
+    if (!imgs.length) return null;
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
+      + imgs.map((im, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${im.seq}${im.ext}"/>`).join("")
+      + `</Relationships>`;
+  });
+  const sheetRels = sheetImgs.map((imgs, si) => imgs.length
+    ? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${si + 1}.xml"/></Relationships>`
+    : null);
 
   // —— workbook / rels / content-types 按 sheet 数量动态拼 ——
   const sheetTags = list.map((o, i) => {
@@ -1364,20 +1408,33 @@ function buildXlsx(sheets) {
     + list.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("")
     + `<Relationship Id="${styleRid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
   const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+  const imgExts = [...new Set(mediaParts.map((m) => path.extname(m.name).slice(1).toLowerCase()))];
+  // 只对实际用到的图片扩展名声明 Default（PNG 无扩展名分支 → 用 png 占位不影响读取）
+  const imgTypes = (imgExts.length ? imgExts : ["png"])
+    .map((e) => `<Default Extension="${e}" ContentType="${IMG_MIME["." + e] || "image/png"}"/>`).join("");
+  const drawingTypes = drawXmls.some(Boolean)
+    ? `<Default Extension="drawing" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>` : "";
   const ct = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">`
     + `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>`
+    + imgTypes + drawingTypes
     + `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>`
     + list.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")
     + `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`;
 
-  return zipStore([
+  const parts = [
     { name: "[Content_Types].xml", data: Buffer.from(ct, "utf8") },
     { name: "_rels/.rels", data: Buffer.from(rels, "utf8") },
     { name: "xl/workbook.xml", data: Buffer.from(workbook, "utf8") },
     { name: "xl/_rels/workbook.xml.rels", data: Buffer.from(wbRels, "utf8") },
     { name: "xl/styles.xml", data: Buffer.from(XLSX_STYLES, "utf8") },
     ...sheetXmls.map((xml, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: Buffer.from(xml, "utf8") })),
-  ]);
+    ...mediaParts,                                                   // 图片本体
+  ];
+  // 绘图与关系：仅对"有图片"的表输出
+  drawXmls.forEach((xml, i) => { if (xml) parts.push({ name: `xl/drawings/drawing${i + 1}.xml`, data: Buffer.from(xml, "utf8") }); });
+  drawRels.forEach((xml, i) => { if (xml) parts.push({ name: `xl/drawings/_rels/drawing${i + 1}.xml.rels`, data: Buffer.from(xml, "utf8") }); });
+  sheetRels.forEach((xml, i) => { if (xml) parts.push({ name: `xl/worksheets/_rels/sheet${i + 1}.xml.rels`, data: Buffer.from(xml, "utf8") }); });
+  return zipStore(parts);
 }
 
 /* ---------------- 导出（xlsx / csv） ---------------- */
@@ -1441,6 +1498,68 @@ function attText(list) {
     .map((p) => (p && p.n) || String((p && p.u) || "").split("/").pop() || "")
     .filter(Boolean).join("、");
 }
+
+/** 附件里能嵌入 Excel 的图片（pdf/word 等不能嵌，只列名） */
+function imgAtts(list) {
+  return (Array.isArray(list) ? list : []).filter((p) => {
+    const u = (p && p.u) || p;
+    return u && IMG_MIME[path.extname(String(u)).toLowerCase()];
+  });
+}
+
+/**
+ * 生成「把附件图片嵌到某单元格」所需的图片描述。
+ * **按原始比例等比缩放**到单元格可用空间内，横向并排（最多 maxN 张），每张水平居中。
+ * @param {Array} list  附件数组
+ * @param {number} row  0-based 行号
+ * @param {number} col  0-based 列号
+ * @param {number} boxW 单元格可用宽（px）
+ * @param {number} boxH 单元格可用高（px）
+ */
+function embedImages(list, row, col, boxW, boxH, maxN = 3) {
+  const imgs = imgAtts(list).slice(0, maxN);
+  if (!imgs.length) return [];
+  const gap = 3;
+  const slot = (boxW - gap * (imgs.length - 1)) / imgs.length;
+  const availH = boxH - 4;
+  return imgs.map((p, i) => {
+    const file = path.join(UPLOAD_DIR, path.basename(String((p && p.u) || p)));
+    let w = slot; let h = availH;
+    try {
+      const nat = imageSize(fs.readFileSync(file));
+      if (nat && nat.w > 0 && nat.h > 0) {
+        const k = Math.min(slot / nat.w, availH / nat.h);   // 等比缩放，整张图都放得下
+        w = Math.max(16, Math.round(nat.w * k));
+        h = Math.max(16, Math.round(nat.h * k));
+      }
+    } catch { /* 读不到尺寸就按格子大小放 */ }
+    return {
+      file, row, col,
+      offX: Math.round(i * (slot + gap) + Math.max(0, (slot - w) / 2)),   // 每张在自己的格位里居中
+      offY: 2,
+      w, h,
+    };
+  });
+}
+
+/**
+ * 附件列的文字内容：
+ *   · 有可嵌入的图片 → 嵌图（同时把随附的非图片文件名列出来）
+ *   · 只有非图片附件 → 列出文件名
+ */
+function attCellText(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const imgs = imgAtts(arr);
+  const others = arr.filter((p) => !imgs.includes(p));
+  if (!imgs.length) return attText(arr);
+  const extra = imgs.length > 3 ? `（共 ${imgs.length} 张）` : "";
+  return attText(others) + extra;
+}
+
+/** 行高 pt → px（1pt = 1.333px），供嵌图算尺寸 */
+const pt2px = (pt) => Math.round(Number(pt) * 1.333);
+/** 列宽（字符）→ px（Excel 近似公式：px = 宽 × 7 + 5） */
+const w2px = (w) => Math.round(Number(w) * 7 + 5);
 /** 像素 → XLSX 字符宽（1 字符 ≈ 7px，下限 5） */
 const pxToW = (px) => Math.max(5, Math.round(((Number(px) || 56) / 7) * 10) / 10);
 
@@ -1478,6 +1597,52 @@ const H_RAW = ["序号", "日期", "检查部位", "现场具体隐患", "检查
 /** 表头行对象（统一样式 2=表头） */
 const thRow = (headers) => ({ h: headRowHeight(headers), cells: headers.map((v) => ({ v, s: XS.TH })) });
 
+/* ---------------- 图片嵌入支持 ----------------
+ * 纸质销号单/通知单里的「图片」列是真照片，所以导出件也要把照片**嵌进单元格**，
+ * 而不是只写个文件名。这里实现最小可用的 XLSX 图片嵌入（零依赖）：
+ *   · xl/media/imageN.<ext>                       图片本体
+ *   · xl/drawings/drawingN.xml                    每表一份，用 oneCellAnchor 锚到单元格
+ *   · xl/drawings/_rels/drawingN.xml.rels         图片关系
+ *   · xl/worksheets/_rels/sheetN.xml.rels         表 → 绘图 关系
+ *   · 工作表 XML 末尾加 <drawing r:id="..."/>
+ *   · [Content_Types].xml 加 png/jpeg 的 Default
+ */
+
+/** 从文件头读出图片像素尺寸（PNG / JPEG / GIF）；读不出返回 null */
+function imageSize(buf) {
+  try {
+    // PNG：IHDR 紧跟在 8 字节签名 + 4 字节长度 + 4 字节类型之后
+    if (buf.length > 24 && buf.readUInt32BE(0) === 0x89504e47) {
+      return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+    }
+    // GIF：宽高为小端 16 位
+    if (buf.length > 10 && buf.slice(0, 3).toString("latin1") === "GIF") {
+      return { w: buf.readUInt16LE(6), h: buf.readUInt16LE(8) };
+    }
+    // JPEG：扫描 SOFn 段
+    if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+      let i = 2;
+      while (i + 9 < buf.length) {
+        if (buf[i] !== 0xff) { i += 1; continue; }
+        const marker = buf[i + 1];
+        const len = buf.readUInt16BE(i + 2);
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };
+        }
+        i += 2 + len;
+      }
+    }
+  } catch { /* 解析失败按未知处理 */ }
+  return null;
+}
+
+/** 扩展名 → MIME（只支持可嵌入的图片类型） */
+const IMG_MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif" };
+
+/** 把 px 换算成 EMU（1 px = 9525 EMU，Excel 的英制单位） */
+const px2emu = (px) => Math.round(px * 9525);
+
+
 /** 从隐患行取出三张表单共用的值 */
 function formVals(h) {
   return {
@@ -1507,7 +1672,9 @@ function formVals(h) {
 function sheetNotice(rows, meta) {
   const ORG = ORG_NAME();
   const NCOL = 14;
+  const cols = fitCols(H_NOTICE, [24, 44, 56, 56, 143, 100, 248, 66, 66, 59, 114, 49, 51, 63].map(pxToW));
   const out = [];
+  const images = [];
   out.push({ h: 36, cells: [{ v: `${ORG}检查问题整改通知单`, s: XS.TITLE }] });
   // 行2：左=说明段（A:K），右=落款（L:N，右下角）
   out.push({
@@ -1520,14 +1687,20 @@ function sheetNotice(rows, meta) {
   out.push(thRow(H_NOTICE));
   rows.forEach((h, i) => {
     const v = formVals(h);
+    const hasImg = imgAtts(h.hazardPhotos).length > 0;
+    const rh = hasImg ? 70 : 56;
+    const r0 = out.length;
     out.push({
-      h: 56, cells: [
+      h: rh, cells: [
         { v: i + 1, s: XS.CENTER }, { v: ORG, s: XS.CENTER }, { v: v.loc, s: XS.CENTER }, { v: v.lvl, s: XS.CENTER },
-        { v: v.desc, s: XS.LEFT }, { v: v.before, s: XS.LEFT }, { v: v.measure, s: XS.LEFT },
+        { v: v.desc, s: XS.LEFT },
+        { v: attCellText(h.hazardPhotos), s: XS.CENTER },       // F 列：问题或隐患图片（嵌图）
+        { v: v.measure, s: XS.LEFT },
         { v: v.term, s: XS.CENTER }, { v: v.person, s: XS.CENTER }, { v: v.fund, s: XS.CENTER },
         { v: v.reviewDate, s: XS.CENTER }, { v: v.result, s: XS.CENTER }, { v: v.reviewer, s: XS.CENTER }, { v: "", s: XS.CENTER },
       ],
     });
+    images.push(...embedImages(h.hazardPhotos, r0, 5, w2px(cols[5]), pt2px(rh)));   // F 列 = 0-based 5
   });
   const foot = out.length + 1;
   // 表尾：左右两段同一行（左段 A:F，右段 H:N）
@@ -1539,8 +1712,9 @@ function sheetNotice(rows, meta) {
   });
   return {
     sheetName: "检查隐患问题整改通知单",
-    cols: fitCols(H_NOTICE, [24, 44, 56, 56, 143, 100, 248, 66, 66, 59, 114, 49, 51, 63].map(pxToW)),
+    cols,
     rows: out,
+    images,
     merges: [
       `A1:${colName(NCOL)}1`,
       `A2:K2`, `L2:${colName(NCOL)}2`,
@@ -1559,7 +1733,9 @@ function sheetNotice(rows, meta) {
 function sheetClosure(rows, meta) {
   const ORG = ORG_NAME();
   const NCOL = 13;
+  const cols = fitCols(H_CLOSURE, [24, 95, 70, 56, 200, 280, 60, 70, 60, 80, 60, 90, 90].map(pxToW));
   const out = [];
+  const images = [];
   out.push({ h: 36, cells: [{ v: `${ORG}检查问题销号申请单`, s: XS.TITLE }] });
   // 行2：左=单位（A:F），右=日期（H:M）
   out.push({
@@ -1571,14 +1747,23 @@ function sheetClosure(rows, meta) {
   out.push(thRow(H_CLOSURE));
   rows.forEach((h, i) => {
     const v = formVals(h);
+    // 有照片的行适当加高，保证图片看得清
+    const hasImg = imgAtts(h.hazardPhotos).length > 0 || imgAtts(h.rectifyPhotos).length > 0;
+    const rh = hasImg ? 70 : 56;
+    const r0 = out.length;                       // 本行的 0-based 行号
     out.push({
-      h: 56, cells: [
+      h: rh, cells: [
         { v: i + 1, s: XS.CENTER }, { v: ORG, s: XS.CENTER }, { v: v.loc, s: XS.CENTER }, { v: v.lvl, s: XS.CENTER },
         { v: v.desc, s: XS.LEFT }, { v: v.measure, s: XS.LEFT }, { v: v.term, s: XS.CENTER },
         { v: v.person, s: XS.CENTER }, { v: v.result, s: XS.CENTER }, { v: v.doneDate, s: XS.CENTER },
-        { v: v.reviewer, s: XS.CENTER }, { v: v.before, s: XS.LEFT }, { v: v.after, s: XS.LEFT },
+        { v: v.reviewer, s: XS.CENTER },
+        { v: attCellText(h.hazardPhotos), s: XS.CENTER },      // L 列：整改前图片（嵌图，文字兜底）
+        { v: attCellText(h.rectifyPhotos), s: XS.CENTER },     // M 列：整改后图片
       ],
     });
+    // 把照片锚到 L / M 列（0-based 列号 11 / 12）
+    images.push(...embedImages(h.hazardPhotos, r0, 11, w2px(cols[11]), pt2px(rh)));
+    images.push(...embedImages(h.rectifyPhotos, r0, 12, w2px(cols[12]), pt2px(rh)));
   });
   // 表尾：左右两段同一行（左段 A:F，右段 H:M），其后 2 个合并空行
   const f1 = out.length + 1; const f2 = out.length + 2; const f3 = out.length + 3;
@@ -1592,8 +1777,9 @@ function sheetClosure(rows, meta) {
   out.push({ h: 20, cells: [{ v: "", s: XS.NOTE }] });
   return {
     sheetName: "检查问题销号申请单",
-    cols: fitCols(H_CLOSURE, [24, 95, 70, 56, 200, 280, 60, 70, 60, 80, 60, 90, 90].map(pxToW)),
+    cols,
     rows: out,
+    images,
     merges: [
       `A1:${colName(NCOL)}1`,
       `A2:F2`, `H2:${colName(NCOL)}2`,
@@ -1625,6 +1811,7 @@ function sheetLedger(rows, meta) {
   return {
     sheetName: "安全隐患整改治理台账",
     cols: fitCols(H_LEDGER, [44, 114, 119, 119, 236, 338, 116, 67, 116, 67, 73].map(pxToW)),
+    images: [],
     rows: out,
     merges: [`A1:${colName(NCOL)}1`, `A2:${colName(NCOL)}2`],
   };
@@ -1652,6 +1839,7 @@ function sheetRaw(rows) {
   return {
     sheetName: "原始检查记录",
     cols: fitCols(H_RAW, [44, 114, 130, 380, 120, 160].map(pxToW)),
+    images: [],
     rows: out,
     merges: [`A1:F1`, `A${foot}:F${foot}`],
   };
@@ -1740,11 +1928,22 @@ async function handleExport(res, url, user) {
 
   // 按 template 生成纸质表单版式；未指定则用旧的扁平台账
   const spec = template ? TEMPLATE_BUILDERS[template](rows, meta) : {
-    sheetName: "隐患台账", cols: [], rows: [
+    sheetName: "隐患台账", cols: [], images: [], rows: [
       { h: 24, cells: headers.map((x) => ({ v: x, s: XS.TH })) },
       ...data.map((row) => ({ cells: row.map((v) => ({ v, s: XS.CENTER })) })),
     ], merges: [],
   };
+
+  // format=json：把「版式规格」原样返回，供**打印**复用同一套版式（保证打印与导出格式一致）
+  if (format === "json") {
+    const toUrls = (s) => ({
+      ...s,
+      images: (s.images || []).map((im) => ({ ...im, url: `/uploads/${path.basename(im.file)}` })),
+    });
+    const sheets = (Array.isArray(spec) ? spec : [spec]).map(toUrls);
+    return sendJson(res, { sheets, template: template || "", count: rows.length });
+  }
+
   const buf = buildXlsx(spec);
   const fname = template ? `${TEMPLATE_NAMES[template]}_${stamp}.xlsx` : `hazard_${stamp}.xlsx`;
   res.writeHead(200, {
@@ -1829,13 +2028,15 @@ const IMAGE_URL_RE = /\.(jpe?g|png|webp|gif)$/i;
  * 仅系统管理员可访问。
  */
 
-/** 汇总数据库里所有被引用的图片文件名（去掉 /uploads/ 前缀，便于与磁盘文件名比对） */
+/** 汇总数据库里所有被引用的图片文件名（去掉 /uploads/ 前缀，便于与磁盘文件名比对）
+ *  ⚠️ parsePhotos() 返回的是 {u,n} 对象（兼容旧的纯字符串格式），
+ *     这里必须取 .u，不能直接当字符串用 —— 曾经因为这一点导致本接口 500。 */
 async function getReferencedPhotos() {
   const r = await pool.query("SELECT hazard_photos, rectify_photos FROM hazard");
   const set = new Set();
   for (const row of r.rows) {
     for (const raw of [row.hazard_photos, row.rectify_photos]) {
-      for (const u of parsePhotos(raw)) set.add(u.replace(/^\/uploads\//, ""));
+      for (const p of parsePhotos(raw)) set.add(p.u.replace(/^\/uploads\//, ""));
     }
   }
   return set;
