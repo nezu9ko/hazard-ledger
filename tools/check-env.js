@@ -93,6 +93,24 @@ const daysAgo = (ms) => Math.floor((Date.now() - ms) / 86400000);
     const h = await httpJson(`http://127.0.0.1:${PORT}/api/health`);
     if (h && h.status === 200 && h.body && h.body.ok) ok("接口健康检查", "正常响应");
     else bad("接口健康检查", "服务在跑但接口无响应，请查看 server-out.log");
+
+    // 列出当前所有可访问地址 —— 这是"同事连不上"时最需要的信息。
+    // IP 由所在网络决定，换网络就会变，所以每次体检都实取，不写死。
+    const lanIps = [];
+    for (const name of Object.keys(os.networkInterfaces())) {
+      for (const a of os.networkInterfaces()[name] || []) {
+        if (a.family === "IPv4" && !a.internal) lanIps.push({ ip: a.address, name });
+      }
+    }
+    const usable = lanIps.filter((x) => !/^169\.254\./.test(x.ip));   // 排除自动私有地址
+    info(
+      "当前访问地址",
+      `本机 http://localhost:${PORT}`
+        + (usable.length ? " ｜ 局域网 " + usable.map((x) => `http://${x.ip}:${PORT}（${x.name}）`).join(" ｜ ") : " ｜ 局域网 无可用网卡地址")
+    );
+    if (!usable.length) {
+      warn("局域网地址", "未检测到可用网卡地址 —— 请确认这台电脑已连上网络（网线或 WiFi）");
+    }
   }
 
   const p5432 = await portOpen(DB.port, DB.host);
