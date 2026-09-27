@@ -362,6 +362,7 @@ function rowToHazard(r, today) {
     status,
     actualCompleteDate: r.actual_complete_date ?? null,
     reviewer: r.reviewer ?? null,
+    reviewerUserId: r.reviewer_user_id ?? null,
     reviewDate: r.review_date ?? null,
     reviewResult: r.review_result ?? null,
     closedAt: r.closed_at ? new Date(r.closed_at).toISOString() : null,
@@ -508,7 +509,8 @@ const SCHEMA_COMMENTS = [
   ["COLUMN", "hazard", "emergency_plan", "应急预案"],
   ["COLUMN", "hazard", "status", "状态：pending待整改 / rectifying整改中 / closed已闭环"],
   ["COLUMN", "hazard", "actual_complete_date", "实际完成整改的日期"],
-  ["COLUMN", "hazard", "reviewer", "复查（验收）人"],
+  ["COLUMN", "hazard", "reviewer", "复查（验收）人姓名（登记时指定，冗余存姓名便于打印/导出）"],
+  ["COLUMN", "hazard", "reviewer_user_id", "复查人用户ID（与 reviewer 对应；只有该人可执行复查闭环，管理员可代办）"],
   ["COLUMN", "hazard", "review_date", "复查日期"],
   ["COLUMN", "hazard", "review_result", "复查意见"],
   ["COLUMN", "hazard", "closed_at", "闭环时间（看板「闭环耗时」= closed_at − created_at）"],
@@ -605,6 +607,7 @@ async function initDatabase() {
       status TEXT NOT NULL DEFAULT 'pending',
       actual_complete_date TEXT,
       reviewer TEXT,
+      reviewer_user_id TEXT,
       review_date TEXT,
       review_result TEXT,
       closed_at TIMESTAMPTZ,
@@ -619,6 +622,14 @@ async function initDatabase() {
     -- 流程调整：登记时只填隐患信息，整改措施改由整改责任人在「开始整改」时填写，
     -- 因此老库上原有的 NOT NULL 约束要去掉（新库建表时已允许为空）。
     ALTER TABLE hazard ALTER COLUMN rectify_measure DROP NOT NULL;
+    -- 复查人也需要绑定账号（只有指定的人能复查闭环）
+    ALTER TABLE hazard ADD COLUMN IF NOT EXISTS reviewer_user_id TEXT;
+    -- 老数据（当初只手填了姓名、没选用户）按姓名自动匹配绑定；
+    -- 匹配不上的保持为空，此时仅系统管理员可代办（见 PATCH 权限判断）。
+    UPDATE hazard h SET rectify_user_id = u.id
+      FROM users u WHERE h.rectify_user_id IS NULL AND h.rectify_person = u.user_name;
+    UPDATE hazard h SET reviewer_user_id = u.id
+      FROM users u WHERE h.reviewer_user_id IS NULL AND h.reviewer = u.user_name;
     CREATE INDEX IF NOT EXISTS idx_hazard_status ON hazard(status);
     CREATE INDEX IF NOT EXISTS idx_hazard_inspect_date ON hazard(inspect_date);
     CREATE INDEX IF NOT EXISTS idx_hazard_plan_deadline ON hazard(plan_deadline);
@@ -958,7 +969,8 @@ async function handleHazards(req, res, url, id, user) {
 
       // 登记环节只填**隐患信息** + 整改责任人 + 计划完成时限；
       // 整改措施 / 整改资金 / 应急预案 由整改责任人在「开始整改」时填写（见 PATCH action=start-rectify）。
-      const required = ["inspectDate", "inspector", "location", "description", "category", "level", "rectifyPerson", "planDeadline"];
+      const required = ["inspectDate", "inspector", "location", "description", "category", "level",
+        "rectifyPerson", "planDeadline", "reviewer"];
       for (const k of required) {
         if (body[k] === undefined || body[k] === null || String(body[k]).trim() === "") return badRequest(res, `字段 ${k} 不能为空`);
       }
@@ -984,12 +996,13 @@ async function handleHazards(req, res, url, id, user) {
       const rectifyPhotos = normalizePhotos(body.rectifyPhotos);
       await pool.query(
         `INSERT INTO hazard (id,hazard_code,inspect_date,inspector,location,description,category,level,
-          rectify_person,rectify_user_id,plan_deadline,status,hazard_photos,rectify_photos)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12,$13)`,
+          rectify_person,rectify_user_id,plan_deadline,reviewer,reviewer_user_id,status,hazard_photos,rectify_photos)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',$14,$15)`,
         [newId, hazardCode, body.inspectDate, String(body.inspector).trim(), String(body.location).trim(),
           String(body.description).trim(), body.category, body.level,
           String(body.rectifyPerson).trim(), body.rectifyUserId ? String(body.rectifyUserId).trim() : null,
           body.planDeadline,
+          String(body.reviewer).trim(), body.reviewerUserId ? String(body.reviewerUserId).trim() : null,
           hazardPhotos.length ? JSON.stringify(hazardPhotos) : null,
           rectifyPhotos.length ? JSON.stringify(rectifyPhotos) : null]
       );
@@ -1025,8 +1038,16 @@ async function handleHazards(req, res, url, id, user) {
 
     // —— 复查闭环 ——
     if (body.action === "review") {
-      if (!["reviewer", "safety_admin", "admin"].includes(user.role)) {
-        return sendJson(res, { error: { code: "FORBIDDEN", message: "仅复查人员/安全管理员/系统管理员可执行复查闭环" } }, 403);
+      // 权限：**只有登记时指定的复查人本人**可执行；系统管理员可代办（应急）。
+      // 其他安全管理员/复查人员一律不行 —— 做到"谁复查、谁签字"。
+      // 老数据没绑定账号的，仅系统管理员可代办。
+      const isReviewer = !!(row.reviewer_user_id && row.reviewer_user_id === user.id);
+      const isAdmin = user.role === "admin";
+      if (!isReviewer && !isAdmin) {
+        const who = row.reviewer ? `（${row.reviewer}）` : "（未指定，需管理员先指派）";
+        return sendJson(res, {
+          error: { code: "FORBIDDEN", message: `只有复查人${who}本人可以执行复查闭环` },
+        }, 403);
       }
       for (const k of ["actualCompleteDate", "reviewer", "reviewDate", "reviewResult"]) {
         if (!body[k] || String(body[k]).trim() === "") return badRequest(res, `字段 ${k} 不能为空`);
@@ -1049,11 +1070,16 @@ async function handleHazards(req, res, url, id, user) {
     // —— 开始整改：由**整改责任人**在此填写整改信息（整改措施/资金/应急预案）——
     // 隐患登记时只填隐患信息，整改信息在真正动手整改时才由责任人补齐。
     if (body.action === "start-rectify") {
+      // 权限：**只有被指定的整改责任人本人**可填；系统管理员可代办（应急）。
+      // 其他安全管理员一律不行 —— 做到"谁整改、谁填写"。
+      // 老数据没绑定账号的，仅系统管理员可代办。
       const isOwner = !!(row.rectify_user_id && row.rectify_user_id === user.id);
-      const isManager = ["safety_admin", "admin"].includes(user.role);
-      // 有明确责任人时只允许本人或管理员操作；历史数据没绑账号则放开
-      if (row.rectify_user_id && !isOwner && !isManager) {
-        return sendJson(res, { error: { code: "FORBIDDEN", message: `只有整改责任人（${row.rectify_person}）或管理员可以填写整改信息` } }, 403);
+      const isAdmin = user.role === "admin";
+      if (!isOwner && !isAdmin) {
+        const who = row.rectify_person ? `（${row.rectify_person}）` : "（未指定，需管理员先指派）";
+        return sendJson(res, {
+          error: { code: "FORBIDDEN", message: `只有整改责任人${who}本人可以填写整改信息` },
+        }, 403);
       }
       if (row.status === "closed") return badRequest(res, "该隐患已闭环，无法再整改");
       if (row.status === "rectifying") return badRequest(res, "该隐患已在整改中");
@@ -1096,6 +1122,7 @@ async function handleHazards(req, res, url, id, user) {
     const map = {
       inspectDate: "inspect_date", inspector: "inspector", location: "location", description: "description",
       rectifyMeasure: "rectify_measure", rectifyPerson: "rectify_person", rectifyUserId: "rectify_user_id",
+      reviewer: "reviewer", reviewerUserId: "reviewer_user_id",
       planDeadline: "plan_deadline", emergencyPlan: "emergency_plan",
     };
     for (const [k, col] of Object.entries(map)) {

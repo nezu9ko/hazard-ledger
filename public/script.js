@@ -1420,16 +1420,19 @@ function renderHazardNew() {
           <div class="field"><label>隐患等级 <span class="req">*</span></label>${sel("level", LEVEL_LABELS, "请选择隐患等级")}</div>
           ${photoUploaderHtml("hazardPhotos", "隐患照片", `最多 ${MAX_PHOTOS} 张，选择后自动上传；点击缩略图可放大`)}
         </div>
-        <div class="section-title" style="margin-top:26px">整改安排</div>
+        <div class="section-title" style="margin-top:26px">责任分工</div>
         <div class="form-grid">
           <div class="field"><label>整改责任人 <span class="req">*</span></label>
             <select class="select" id="rectifyUser"><option value="">请选择整改责任人</option></select></div>
+          <div class="field"><label>复查人员 <span class="req">*</span></label>
+            <select class="select" id="reviewUser"><option value="">请选择复查人员</option></select></div>
           <div class="field"><label>计划完成时限 <span class="req">*</span></label><input class="input" type="date" id="planDeadline"></div>
         </div>
         <div class="callout-info" style="margin-top:12px">
           ${icon("info", 15)}
           <div><strong>整改措施、整改资金、应急预案不在此填写</strong> —— 登记只记录"发现了什么问题"；
-            具体怎么改，由<strong>整改责任人</strong>在整改时点「开始整改」填写，符合"谁整改、谁负责"的要求。</div>
+            具体怎么改，由<strong>整改责任人</strong>在整改时点「填写整改信息」填写；
+            最后由<strong>复查人员</strong>复查闭环。这两个人<strong>只有本人能操作</strong>，别人填不了。</div>
         </div>
         <div class="err-text" id="formErr" style="display:none;margin-top:14px"></div>
         <div style="display:flex;justify-content:flex-end;gap:12px;margin-top:24px;padding-top:20px;border-top:1px solid #f1f5f9">
@@ -1443,12 +1446,13 @@ function renderHazardNew() {
   $("#backBtn").onclick = () => history.back();
   const hazardPhotos = initPhotoUploader("hazardPhotos");
 
-  // 整改责任人：从系统用户里选（与账号绑定，"我的待办"才能按人精确提醒）
+  // 整改责任人 / 复查人员：都从系统用户里选（与账号绑定，"我的待办"才能按人精确提醒）
   void (async () => {
     try {
       const r = await api.get("/user-options");
       const opt = (r.items || []).map((u) => `<option value="${esc(u.id)}" data-name="${esc(u.userName)}">${esc(u.userName)}</option>`).join("");
       $("#rectifyUser").innerHTML = `<option value="">请选择整改责任人</option>${opt}`;
+      $("#reviewUser").innerHTML = `<option value="">请选择复查人员</option>${opt}`;
     } catch { /* 拿不到用户列表时保持空，提交时会提示 */ }
   })();
 
@@ -1456,19 +1460,24 @@ function renderHazardNew() {
     e.preventDefault();
     const errEl = $("#formErr"); errEl.style.display = "none";
     const get = (id) => $("#" + id).value;
-    const userSel = $("#rectifyUser");
+    const rSel = $("#rectifyUser"); const vSel = $("#reviewUser");
     const payload = {
       inspectDate: get("inspectDate"), inspector: get("inspector").trim(),
       location: get("location").trim(), description: get("description").trim(),
       category: get("category"), level: get("level"),
-      // 整改责任人：同时送用户ID（绑定账号）与姓名（打印/导出用）
-      rectifyUserId: userSel.value,
-      rectifyPerson: userSel.selectedOptions[0]?.dataset?.name || "",
+      // 责任人 / 复查人：同时送用户ID（绑定账号）与姓名（打印、导出用）
+      rectifyUserId: rSel.value, rectifyPerson: rSel.selectedOptions[0]?.dataset?.name || "",
+      reviewerUserId: vSel.value, reviewer: vSel.selectedOptions[0]?.dataset?.name || "",
       planDeadline: get("planDeadline"),
       hazardPhotos: hazardPhotos.payload(),
     };
-    for (const [k, label] of [["inspectDate", "排查日期"], ["inspector", "排查人员"], ["location", "隐患所在部位"], ["description", "隐患描述"], ["category", "隐患类别"], ["level", "隐患等级"], ["rectifyPerson", "整改责任人"], ["planDeadline", "计划完成时限"]]) {
+    for (const [k, label] of [["inspectDate", "排查日期"], ["inspector", "排查人员"], ["location", "隐患所在部位"],
+      ["description", "隐患描述"], ["category", "隐患类别"], ["level", "隐患等级"],
+      ["rectifyPerson", "整改责任人"], ["reviewer", "复查人员"], ["planDeadline", "计划完成时限"]]) {
       if (!payload[k]) { errEl.textContent = `请填写${label}`; errEl.style.display = "block"; return; }
+    }
+    if (payload.rectifyUserId === payload.reviewerUserId) {
+      errEl.textContent = "整改责任人与复查人员不能是同一个人"; errEl.style.display = "block"; return;
     }
     const btn = $("#submitBtn"); btn.disabled = true; btn.textContent = "提交中...";
     try {
@@ -1503,13 +1512,15 @@ async function renderHazardDetail(id) {
   }
 
   const infoRow = (label, value) => `<div class="info-item"><div class="i-label">${esc(label)}</div><div class="i-value">${esc(value) || "—"}</div></div>`;
-  const isClosed = h.status === "closed";
-  const canReview = ["reviewer", "safety_admin", "admin"].includes(currentUser()?.role);
-  // 整改信息由**整改责任人本人**填写；管理员可代办。历史数据未绑定账号则放开。
+    const isClosed = h.status === "closed";
+    // 权限按"人"严格区分（其他安全管理员也不行）：
+  //   整改信息 → 只有被指定的整改责任人本人（系统管理员可应急代办）
+  //   复查闭环 → 只有被指定的复查人本人（系统管理员可应急代办）
+  //   老数据未绑定账号的 → 仅系统管理员可代办
   const me0 = currentUser();
-  const canRectify = ["safety_admin", "admin"].includes(me0?.role)
-    || (!!h.rectifyUserId && h.rectifyUserId === me0?.id)
-    || !h.rectifyUserId;
+  const isAdmin0 = me0?.role === "admin";
+  const canRectify = isAdmin0 || (!!h.rectifyUserId && h.rectifyUserId === me0?.id);
+  const canReview = isAdmin0 || (!!h.reviewerUserId && h.reviewerUserId === me0?.id);
 
   const reviewForm = `
     <form id="reviewForm">
@@ -1520,7 +1531,7 @@ async function renderHazardDetail(id) {
       <div class="form-grid" style="margin-top:16px">
         <div class="field span-2"><label>复查人员 <span class="req">*</span></label>
           <select class="select" id="reviewer"><option value="">请选择复查人员</option></select>
-          <div style="font-size:12px;color:#9ca3af;margin-top:4px">默认取本隐患的排查人员，可改选其他人</div></div>
+          <div style="font-size:12px;color:#9ca3af;margin-top:4px">默认取登记时指定的复查人；只有该人（或管理员）能提交复查</div></div>
         <div class="field span-2"><label>复查结果 <span class="req">*</span></label><textarea class="textarea" id="reviewResult" placeholder="请输入复查结果描述"></textarea></div>
       </div>
       <div class="err-text" id="reviewErr" style="display:none;margin-top:12px"></div>
@@ -1642,12 +1653,12 @@ async function renderHazardDetail(id) {
     }
   const rf = $("#reviewForm");
   if (rf) {
-    // 复查人员：默认取本隐患的**排查（录入）人员**，同时提供系统用户列表供改选。
-    // 排查人是自由文本，若不在用户列表里就把它作为一项补进去，保证默认值可见可选。
+    // 复查人 = 登记时指定的那位（只有本人能提交，见后端权限判断）。
+    // 下拉里仍列出全部用户，方便管理员应急代办时改选。
     void (async () => {
       const sel = $("#reviewer");
       if (!sel) return;
-      const def = String(h.inspector || "").trim();
+      const def = String(h.reviewer || "").trim();
       try {
         const r = await api.get("/user-options");
         const items = (r.items || []).map((u) => u.userName);
@@ -1658,7 +1669,7 @@ async function renderHazardDetail(id) {
         sel.innerHTML = `<option value="">请选择复查人员</option>`
           + (def ? `<option value="${esc(def)}">${esc(def)}</option>` : "");
       }
-      if (def) sel.value = def;                        // 默认选中录入人员
+      if (def) sel.value = def;                        // 默认 = 登记时指定的复查人
       else if (currentUser()?.userName) sel.value = currentUser().userName;
     })();
 
@@ -1985,8 +1996,8 @@ async function loadReminders() {
       </div>
     </div>`;
 
+    // 个人中心的提醒只做展示，具体权限在隐患详情页按"人"判定
     const canReview = ["reviewer", "safety_admin", "admin"].includes(currentUser()?.role);
-    // 任何角色都可能被指派为整改责任人，故不再按角色限制
     const canRectify = !!currentUser();
 
   box.innerHTML = `
