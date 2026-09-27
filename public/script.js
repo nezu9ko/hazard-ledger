@@ -43,7 +43,11 @@ const LEVEL_LABELS = { major: "重大", general: "一般" };
 const STATUS_LABELS = { pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
 /* 列表筛选用：额外支持「未闭环」伪状态（= 非已闭环，由后端 matchStatus 处理） */
 const STATUS_FILTER_LABELS = { unclosed: "未闭环", pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
-const ROLE_LABELS = { entry: "录入人员", safety_admin: "安全管理员", reviewer: "复查人员", admin: "系统管理员" };
+// 角色只分两类（登记/整改/复查已改为按"人"授权，不再按角色）
+const ROLE_LABELS = { user: "普通用户", admin: "系统管理员" };
+// 部门列表（责任人下拉的一级分组）
+const DEPARTMENTS = ["地测部", "安全部", "通风部", "环保部", "机电部", "生产技术部",
+  "采矿车间", "基建部", "选矿厂", "财务部", "综合管理部"];
 const LEVEL_COLORS = { major: "#dc2626", general: "#ca8a04" };
 
 /* ---------- 通用工具 ---------- */
@@ -186,6 +190,36 @@ function photoUploaderHtml(key, label, hint) {
     </div>
     <input type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" multiple id="${key}Input" style="display:none">
   </div>`;
+}
+
+/**
+ * 按部门分组生成下拉选项 —— **一级菜单=部门，二级菜单=人名**。
+ * 采用浏览器原生的 <optgroup>：部门作为分组标题（不可选），展开后选具体人名。
+ * @param {Array} items       /api/user-options 返回的 items
+ * @param {Object} opt
+ *   opt.valueKey  "id" | "name"   选项的 value 用用户ID还是姓名（默认 id）
+ *   opt.excludeId 排除某个用户ID（如整改责任人不能同时当复查人）
+ *   opt.excludeName 排除某个姓名
+ */
+function deptGroupedOptions(items, opt = {}) {
+  const { valueKey = "id", excludeId = "", excludeName = "" } = opt;
+  const byDept = {};
+  for (const u of items || []) {
+    if (excludeId && u.id === excludeId) continue;
+    if (excludeName && u.userName === excludeName) continue;
+    const d = u.department || "未分配部门";
+    (byDept[d] = byDept[d] || []).push(u);
+  }
+  // 部门先后：先按固定顺序，其余（未在列表里的）排后面
+  const order = [
+    ...DEPARTMENTS.filter((d) => byDept[d]),
+    ...Object.keys(byDept).filter((d) => !DEPARTMENTS.includes(d)),
+  ];
+  return order.map((d) => `<optgroup label="${esc(d)}">`
+    + byDept[d].sort((a, b) => a.userName.localeCompare(b.userName, "zh"))
+      .map((u) => `<option value="${esc(valueKey === "name" ? u.userName : u.id)}"`
+        + ` data-name="${esc(u.userName)}" data-dept="${esc(u.department || "")}">${esc(u.userName)}</option>`).join("")
+    + "</optgroup>").join("");
 }
 
 // 附件上传控件：选择即上传，返回 state（含 payload() 供提交）
@@ -1014,7 +1048,7 @@ async function loadList() {
   catch (err) { card.innerHTML = `<div class="empty"><div class="e-title">加载失败</div><div class="e-sub">${esc(err.message)}</div></div>`; return; }
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.pageSize));
-  const canDel = isAdmin() || currentUser()?.role === "safety_admin";
+  const canDel = isAdmin();
   const rows = data.items.map((h) => `<tr class="${h.status === "overdue" ? "overdue" : ""}" data-view="${h.id}" title="点击查看详情">
       ${canDel ? `<td class="pick"><input type="checkbox" class="row-pick" data-id="${h.id}" data-code="${esc(h.hazardCode)}"></td>` : ""}
       <td class="code">${esc(h.hazardCode)}</td>
@@ -1026,7 +1060,7 @@ async function loadList() {
       <td><span class="badge st-${h.status}">${esc(STATUS_LABELS[h.status] || h.status)}</span></td>
       <td>${esc(h.rectifyPerson)}</td>
       <td>${esc(h.planDeadline)}</td>
-      <td style="white-space:nowrap"><span class="btn-link">查看</span>${isAdmin() || currentUser()?.role === "safety_admin" ? ` <button class="btn-link" style="color:#dc2626" data-del="${h.id}" data-code="${esc(h.hazardCode)}">删除</button>` : ""}</td>
+      <td style="white-space:nowrap"><span class="btn-link">查看</span>${isAdmin() ? ` <button class="btn-link" style="color:#dc2626" data-del="${h.id}" data-code="${esc(h.hazardCode)}">删除</button>` : ""}</td>
     </tr>`).join("");
 
   card.innerHTML = data.items.length === 0
@@ -1446,13 +1480,22 @@ function renderHazardNew() {
   $("#backBtn").onclick = () => history.back();
   const hazardPhotos = initPhotoUploader("hazardPhotos");
 
-  // 整改责任人 / 复查人员：都从系统用户里选（与账号绑定，"我的待办"才能按人精确提醒）
+  // 整改责任人 / 复查人员：从系统用户里选，**按部门分组**（一级部门、二级人名）
   void (async () => {
     try {
       const r = await api.get("/user-options");
-      const opt = (r.items || []).map((u) => `<option value="${esc(u.id)}" data-name="${esc(u.userName)}">${esc(u.userName)}</option>`).join("");
-      $("#rectifyUser").innerHTML = `<option value="">请选择整改责任人</option>${opt}`;
-      $("#reviewUser").innerHTML = `<option value="">请选择复查人员</option>${opt}`;
+      const items = r.items || [];
+      $("#rectifyUser").innerHTML = `<option value="">请选择整改责任人</option>${deptGroupedOptions(items)}`;
+      // 复查人下拉里排除当前已选的整改责任人（两者不能是同一人）
+      const refreshReview = () => {
+        const ex = $("#rectifyUser").selectedOptions[0]?.dataset?.name || "";
+        const keep = $("#reviewUser").value;
+        $("#reviewUser").innerHTML = `<option value="">请选择复查人员</option>`
+          + deptGroupedOptions(items, { excludeName: ex });
+        if (keep && $("#reviewUser").querySelector(`option[value="${CSS.escape(keep)}"]`)) $("#reviewUser").value = keep;
+      };
+      refreshReview();
+      $("#rectifyUser").onchange = refreshReview;
     } catch { /* 拿不到用户列表时保持空，提交时会提示 */ }
   })();
 
@@ -1654,17 +1697,18 @@ async function renderHazardDetail(id) {
   const rf = $("#reviewForm");
   if (rf) {
     // 复查人 = 登记时指定的那位（只有本人能提交，见后端权限判断）。
-    // 下拉里仍列出全部用户，方便管理员应急代办时改选。
+    // 下拉按部门分组列出全部用户，方便管理员应急代办时改选。
     void (async () => {
       const sel = $("#reviewer");
       if (!sel) return;
       const def = String(h.reviewer || "").trim();
       try {
         const r = await api.get("/user-options");
-        const items = (r.items || []).map((u) => u.userName);
-        const names = def && !items.includes(def) ? [def, ...items] : items;
+        const items = r.items || [];
+        const hasDef = items.some((u) => u.userName === def);
         sel.innerHTML = `<option value="">请选择复查人员</option>`
-          + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+          + (def && !hasDef ? `<optgroup label="当前指定"><option value="${esc(def)}">${esc(def)}</option></optgroup>` : "")
+          + deptGroupedOptions(items, { valueKey: "name" });
       } catch {
         sel.innerHTML = `<option value="">请选择复查人员</option>`
           + (def ? `<option value="${esc(def)}">${esc(def)}</option>` : "");
@@ -1772,14 +1816,15 @@ async function loadUsers() {
 
   card.innerHTML = users.length === 0
     ? `<div class="empty">${icon("users", 40)}<div class="e-title">暂无用户数据</div></div>`
-    : `<div class="table-wrap"><table class="tbl" style="min-width:720px">
-        <thead><tr><th>用户姓名</th><th>角色</th><th>创建时间</th><th style="text-align:right">操作</th></tr></thead>
+    : `<div class="table-wrap"><table class="tbl" style="min-width:800px">
+        <thead><tr><th>用户姓名</th><th>所属部门</th><th>角色</th><th>创建时间</th><th style="text-align:right">操作</th></tr></thead>
         <tbody>${users.map((u) => `<tr>
           <td style="font-weight:500">${esc(u.userName)}</td>
+          <td>${u.department ? esc(u.department) : '<span style="color:#cbd5e1">未分配</span>'}</td>
           <td><span class="badge role-${u.role}">${esc(ROLE_LABELS[u.role] || u.role)}</span></td>
           <td style="color:#6b7280">${fmtDateTime(u.createdAt)}</td>
           <td style="text-align:right">
-            ${isAdmin() ? `<button class="btn-link" data-edit="${u.id}">编辑角色</button>
+            ${isAdmin() ? `<button class="btn-link" data-edit="${u.id}">编辑</button>
             <button class="btn-link" style="margin-left:10px" data-reset="${u.id}" data-name="${esc(u.userName)}">重置密码</button>
             <button class="btn-link" style="margin-left:10px;color:#dc2626" data-del="${u.id}" data-name="${esc(u.userName)}">删除</button>`
             : `<span style="color:#9ca3af;font-size:12.5px">仅系统管理员可操作</span>`}
@@ -1790,12 +1835,24 @@ async function loadUsers() {
   card.querySelectorAll("[data-edit]").forEach((b) => {
     const u = users.find((x) => x.id === b.dataset.edit);
     b.onclick = () => openModal({
-      title: "编辑角色", desc: `用户：${u.userName}`,
-      bodyHtml: `<div class="field"><label>角色</label><select class="select" id="editRole">${Object.entries(ROLE_LABELS).map(([v, l]) => `<option value="${v}" ${v === u.role ? "selected" : ""}>${l}</option>`).join("")}</select></div>`,
-      onConfirm: async (overlay) => {
-        try { await api.patch(`/users/${u.id}`, { role: $("#editRole", overlay).value }); toast("角色更新成功"); loadUsers(); }
-        catch (err) { toast("更新失败", err.message, "err"); return false; }
-      },
+        title: "编辑用户", desc: `用户：${u.userName}`,
+        bodyHtml: `
+          <div class="field"><label>所属部门</label>
+            <select class="select" id="editDept">
+              <option value="">（未分配）</option>
+              ${DEPARTMENTS.map((d) => `<option value="${d}" ${d === u.department ? "selected" : ""}>${d}</option>`).join("")}
+            </select></div>
+          <div class="field" style="margin-top:14px"><label>角色</label>
+            <select class="select" id="editRole">${Object.entries(ROLE_LABELS).map(([v, l]) => `<option value="${v}" ${v === u.role ? "selected" : ""}>${l}</option>`).join("")}</select></div>`,
+        onConfirm: async (overlay) => {
+          try {
+            const dept = $("#editDept", overlay).value;
+            if (dept !== (u.department || "")) await api.patch(`/users/${u.id}`, { department: dept });
+            const role = $("#editRole", overlay).value;
+            if (role !== u.role) await api.patch(`/users/${u.id}`, { role });
+            toast("已更新"); loadUsers();
+          } catch (err) { toast("更新失败", err.message, "err"); return false; }
+        },
     });
   });
   card.querySelectorAll("[data-reset]").forEach((b) => {
@@ -1823,10 +1880,13 @@ async function loadUsers() {
 
 function openAddUser() {
   openModal({
-    title: "添加用户", desc: "填写用户信息并分配角色，初始密码为 123456",
+    title: "添加用户", desc: "填写用户信息并分配部门，初始密码为 123456",
     bodyHtml: `
-      <div class="field"><label>用户姓名</label><input class="input" id="newUserName" placeholder="请输入用户姓名"></div>
-      <div class="field"><label>角色</label><select class="select" id="newUserRole">${Object.entries(ROLE_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>
+        <div class="field"><label>用户姓名</label><input class="input" id="newUserName" placeholder="请输入用户姓名"></div>
+        <div class="field" style="margin-top:14px"><label>所属部门</label>
+          <select class="select" id="newUserDept"><option value="">（未分配）</option>
+            ${DEPARTMENTS.map((d) => `<option value="${d}">${d}</option>`).join("")}</select></div>
+        <div class="field" style="margin-top:14px"><label>角色</label><select class="select" id="newUserRole">${Object.entries(ROLE_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>
       <div class="err-text" id="newUserErr" style="display:none"></div>`,
     confirmText: "确认",
     onConfirm: async (overlay) => {
@@ -1834,7 +1894,11 @@ function openAddUser() {
       const errEl = $("#newUserErr", overlay);
       if (!userName) { errEl.textContent = "请输入用户姓名"; errEl.style.display = "block"; return false; }
       try {
-        await api.post("/users", { userName, role: $("#newUserRole", overlay).value });
+        await api.post("/users", {
+          userName,
+          department: $("#newUserDept", overlay).value,
+          role: $("#newUserRole", overlay).value,
+        });
         toast("添加用户成功", "初始密码 123456");
         loadUsers();
       } catch (err) { errEl.textContent = err.message; errEl.style.display = "block"; return false; }
@@ -1997,7 +2061,7 @@ async function loadReminders() {
     </div>`;
 
     // 个人中心的提醒只做展示，具体权限在隐患详情页按"人"判定
-    const canReview = ["reviewer", "safety_admin", "admin"].includes(currentUser()?.role);
+    const canReview = !!currentUser();   // 复查权限在详情页按"指定复查人"判定
     const canRectify = !!currentUser();
 
   box.innerHTML = `

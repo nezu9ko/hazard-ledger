@@ -332,9 +332,8 @@ table.tbl { width: 100%; border-collapse: collapse; min-width: 1040px; font-size
 .st-rectifying { background: #dbeafe; color: #1d4ed8; border-color: #bfdbfe; }
 .st-closed { background: #dcfce7; color: #15803d; border-color: #bbf7d0; }
 .st-overdue { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
-.role-entry { background: #f3f4f6; color: #4b5563; border-color: #e5e7eb; }
-.role-safety_admin { background: #dbeafe; color: #1d4ed8; border-color: #bfdbfe; }
-.role-reviewer { background: #dcfce7; color: #15803d; border-color: #bbf7d0; }
+/* 角色徽章：角色只有「普通用户 user / 系统管理员 admin」两种 */
+.role-user { background: #f3f4f6; color: #4b5563; border-color: #e5e7eb; }
 .role-admin { background: #ede9fe; color: #6d28d9; border-color: #ddd6fe; }
 
 /* ---------- 分页 ---------- */

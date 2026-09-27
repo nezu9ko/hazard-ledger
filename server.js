@@ -94,7 +94,15 @@ const DEFAULT_INITIAL_PASSWORD = "123456";                                      
 const LEVELS = ["major", "general"];                                                      // 隐患等级：重大/一般（二级）
 const CATEGORIES = ["equipment", "operation", "fire", "electrical", "environment", "management"]; // 隐患类别
 const STATUSES = ["pending", "rectifying", "closed"];                                   // 数据库可存的三种状态（overdue 为派生状态，不入库）
-const ROLES = ["entry", "safety_admin", "reviewer", "admin"];                           // 四种角色
+// 角色只分两类：系统管理员（可管用户/删隐患/应急代办）与普通用户（业务操作）。
+// 登记、整改、复查都不再按角色授权，而是**按人**：整改填本人、复查由指定复查人。
+const ROLES = ["user", "admin"];
+
+/** 部门列表（一级菜单）；责任人下拉按此分组，人名作为二级 */
+const DEPARTMENTS = [
+  "地测部", "安全部", "通风部", "环保部", "机电部", "生产技术部",
+  "采矿车间", "基建部", "选矿厂", "财务部", "综合管理部",
+];
 
 /* ---------------- 工具 ---------------- */
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
@@ -374,7 +382,7 @@ function rowToHazard(r, today) {
 }
 function rowToUser(r) {
   return {
-    id: r.id, userId: r.user_id, userName: r.user_name, role: r.role,
+    id: r.id, userId: r.user_id, userName: r.user_name, role: r.role, department: r.department || "",
     mustChangePassword: Boolean(r.must_change_password),
     createdAt: new Date(r.created_at).toISOString(),
   };
@@ -464,13 +472,13 @@ function requiredRoles(method, path) {
   if (path.startsWith("/api/users/")) return ["admin"];
   // 隐患
   if (path === "/api/hazards") {
-    if (method === "POST") return ["entry", "safety_admin", "admin"];
+    if (method === "POST") return ["user", "admin"];      // 登记：任意登录用户
     return null; // GET 列表：任意已登录用户
   }
   if (path.startsWith("/api/hazards/")) {
     // 具体动作（复查 / 开始整改 / 字段修改）在 handler 内按角色细分
     if (method === "GET") return null;
-    return ["entry", "reviewer", "safety_admin", "admin"];
+    return ["user", "admin"];
   }
   // 统计
   if (path === "/api/stats") return null;
@@ -524,9 +532,10 @@ const SCHEMA_COMMENTS = [
   ["COLUMN", "users", "id", "主键ID"],
   ["COLUMN", "users", "user_id", "登录账号（唯一）"],
   ["COLUMN", "users", "user_name", "用户姓名（唯一，操作日志中显示的就是它）"],
-  ["COLUMN", "users", "role", "角色：entry录入人员 / reviewer复查人员 / safety_admin安全管理员 / admin系统管理员"],
-  ["COLUMN", "users", "salt", "口令盐值（随机24位十六进制）"],
-  ["COLUMN", "users", "password_hash", "口令散列值 = SHA-256(salt::明文口令)"],
+  ["COLUMN", "users", "role", "角色：user普通用户 / admin系统管理员"],
+  ["COLUMN", "users", "department", "所属部门（如 安全部/机电部）；责任人下拉按部门分组展示"],
+  ["COLUMN", "users", "salt", "口令盐值（scrypt 格式自描述串时可为空）"],
+  ["COLUMN", "users", "password_hash", "口令散列值（scrypt 慢哈希，自描述格式；兼容旧 SHA-256）"],
   ["COLUMN", "users", "must_change_password", "是否强制修改密码（新建用户、重置密码后为 true，首次登录须改密）"],
   ["COLUMN", "users", "created_at", "创建时间"],
 
@@ -624,6 +633,12 @@ async function initDatabase() {
     ALTER TABLE hazard ALTER COLUMN rectify_measure DROP NOT NULL;
     -- 复查人也需要绑定账号（只有指定的人能复查闭环）
     ALTER TABLE hazard ADD COLUMN IF NOT EXISTS reviewer_user_id TEXT;
+    -- 角色收敛为「user普通用户 / admin系统管理员」两种；
+    -- 原来的 entry/reviewer/safety_admin 一律并入 user（登记、整改、复查已改成按"人"授权）。
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS department TEXT;
+    UPDATE users SET role = 'user' WHERE role NOT IN ('user', 'admin');
+    -- 首次升级时把现有人员统一归入「安全部」（管理员之后可在用户管理里改）
+    UPDATE users SET department = '安全部' WHERE department IS NULL;
     -- 老数据（当初只手填了姓名、没选用户）按姓名自动匹配绑定；
     -- 匹配不上的保持为空，此时仅系统管理员可代办（见 PATCH 权限判断）。
     UPDATE hazard h SET rectify_user_id = u.id
@@ -639,6 +654,7 @@ async function initDatabase() {
       user_id TEXT NOT NULL UNIQUE,
       user_name TEXT NOT NULL UNIQUE,
       role TEXT NOT NULL,
+      department TEXT,
       salt TEXT NOT NULL,
       password_hash TEXT NOT NULL,
       must_change_password BOOLEAN NOT NULL DEFAULT TRUE,
@@ -751,7 +767,7 @@ async function handleAuth(req, res, url) {
     return sendJson(res, {
       success: true,
       token,
-      user: { id: u.id, userId: u.user_id, userName: u.user_name, role: u.role, createdAt: new Date(u.created_at).toISOString() },
+      user: { id: u.id, userId: u.user_id, userName: u.user_name, role: u.role, department: u.department || "", createdAt: new Date(u.created_at).toISOString() },
       mustChangePassword: Boolean(u.must_change_password),
     });
   }
@@ -810,14 +826,15 @@ async function handleUsers(req, res, url, id, user) {
       if (!ROLES.includes(body.role)) return badRequest(res, "角色非法");
       const dup = await pool.query("SELECT 1 FROM users WHERE user_name = $1", [userName]);
       if (dup.rowCount > 0) return badRequest(res, "用户姓名已存在");
-        const uid = genId(); const userId = body.userId || `u_${Date.now()}`;
-        const ph = makePasswordHash(DEFAULT_INITIAL_PASSWORD);
-        await pool.query(
-          "INSERT INTO users (id,user_id,user_name,role,salt,password_hash,must_change_password) VALUES ($1,$2,$3,$4,$5,$6,TRUE)",
-          [uid, userId, userName, body.role, ph.salt, ph.hash]
-        );
-      const created = await pool.query("SELECT * FROM users WHERE id = $1", [uid]);
-      await logOp(user, "create_user", { targetType: "user", targetId: uid, targetCode: userName, detail: `角色：${body.role}` });
+          const uid = genId(); const userId = body.userId || `u_${Date.now()}`;
+          const ph = makePasswordHash(DEFAULT_INITIAL_PASSWORD);
+          const dept = String(body.department || "").trim() || null;
+          await pool.query(
+            "INSERT INTO users (id,user_id,user_name,role,department,salt,password_hash,must_change_password) VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)",
+            [uid, userId, userName, body.role, dept, ph.salt, ph.hash]
+          );
+        const created = await pool.query("SELECT * FROM users WHERE id = $1", [uid]);
+        await logOp(user, "create_user", { targetType: "user", targetId: uid, targetCode: userName, detail: `部门：${dept || "（未指定）"}｜角色：${body.role}` });
       return sendJson(res, rowToUser(created.rows[0]), 201);
     }
     return sendJson(res, { error: { code: "METHOD_NOT_ALLOWED", message: "不支持的方法" } }, 405);
@@ -841,13 +858,19 @@ async function handleUsers(req, res, url, id, user) {
       await logOp(user, "reset_password", { targetType: "user", targetId: id, targetCode: found.rows[0].user_name, detail: "重置为初始密码" });
       return sendJson(res, { success: true });
     }
-    if (body.role !== undefined) {
-      if (!ROLES.includes(body.role)) return badRequest(res, "角色非法");
-      const r = await pool.query("UPDATE users SET role=$1 WHERE id=$2 RETURNING *", [body.role, id]);
-      await logOp(user, "update_user_role", { targetType: "user", targetId: id, targetCode: found.rows[0].user_name, detail: `角色：${found.rows[0].role} → ${body.role}` });
-      return sendJson(res, rowToUser(r.rows[0]));
-    }
-    return badRequest(res, "未提供可更新字段");
+      if (body.role !== undefined) {
+        if (!ROLES.includes(body.role)) return badRequest(res, "角色非法");
+        const r = await pool.query("UPDATE users SET role=$1 WHERE id=$2 RETURNING *", [body.role, id]);
+        await logOp(user, "update_user_role", { targetType: "user", targetId: id, targetCode: found.rows[0].user_name, detail: `角色：${found.rows[0].role} → ${body.role}` });
+        return sendJson(res, rowToUser(r.rows[0]));
+      }
+      if (body.department !== undefined) {
+        const dept = String(body.department).trim() || null;
+        const r = await pool.query("UPDATE users SET department=$1 WHERE id=$2 RETURNING *", [dept, id]);
+        await logOp(user, "update_user_dept", { targetType: "user", targetId: id, targetCode: found.rows[0].user_name, detail: `部门：${found.rows[0].department || "（空）"} → ${dept || "（空）"}` });
+        return sendJson(res, rowToUser(r.rows[0]));
+      }
+      return badRequest(res, "未提供可更新字段");
   }
   return sendJson(res, { error: { code: "METHOD_NOT_ALLOWED", message: "不支持的方法" } }, 405);
 }
@@ -912,15 +935,18 @@ async function handleStats(res) {
 /**
  * 隐患台账核心接口。id 为空时操作"集合"，否则操作"单条"。
  *   GET    /api/hazards              列表（筛选 + 分页，任意登录用户）
- *   POST   /api/hazards              登记（entry / safety_admin / admin）
+ *   POST   /api/hazards              登记（任意登录用户即可，不分角色）
  *   GET    /api/hazards/:id          详情（任意登录用户）
  *   PATCH  /api/hazards/:id          见下方三个分支
- *   DELETE /api/hazards/:id          删除（safety_admin / admin）
+ *   DELETE /api/hazards/:id          删除（仅系统管理员 admin）
  *
  * PATCH 的三个分支（通过 body.action 区分）：
+ *   - action:"start-rectify"  填写整改信息 → 待整改 → 整改中
+ *                             权限：该隐患 rectify_user_id 本人，或 admin 应急代办
  *   - action:"review"         复查闭环 → 要求先处于「整改中」
- *   - action:"start-rectify"  开始整改 → 待整改 → 整改中
- *   - 其余为普通字段修改（仅 safety_admin / admin）
+ *                             权限：该隐患 reviewer_user_id 本人，或 admin 应急代办
+ *   - 其余为普通字段修改（仅 admin）
+ * 注意：登记/整改/复查**不按角色授权，而是按"人"**——见各分支内的 isOwner 判断。
  * 列表筛选支持伪状态 unclosed（未闭环）；编号取号使用 UPSERT 原子自增。
  */
 async function handleHazards(req, res, url, id, user) {
@@ -952,7 +978,7 @@ async function handleHazards(req, res, url, id, user) {
 
       // —— 批量删除（台账页多选后调用；仅安全管理员/系统管理员）——
       if (body.action === "batch-delete") {
-        if (!["safety_admin", "admin"].includes(user.role)) return badRequest(res, "当前角色无权限删除隐患");
+        if (user.role !== "admin") return badRequest(res, "仅系统管理员可删除隐患");
         const ids = Array.isArray(body.ids) ? body.ids.filter((x) => typeof x === "string" && x) : [];
         if (ids.length === 0) return badRequest(res, "请先选择要删除的隐患");
         if (ids.length > 200) return badRequest(res, "单次最多删除 200 条");
@@ -1023,10 +1049,10 @@ async function handleHazards(req, res, url, id, user) {
 
   if (req.method === "GET") return sendJson(res, rowToHazard(row, today));
 
-  if (req.method === "DELETE") {
-    if (!["safety_admin", "admin"].includes(user.role)) {
-      return sendJson(res, { error: { code: "FORBIDDEN", message: "仅安全管理员/系统管理员可删除隐患" } }, 403);
-    }
+    if (req.method === "DELETE") {
+      if (user.role !== "admin") {
+        return sendJson(res, { error: { code: "FORBIDDEN", message: "仅系统管理员可删除隐患" } }, 403);
+      }
     await pool.query("DELETE FROM hazard WHERE id = $1", [id]);
     await logOp(user, "delete_hazard", { targetType: "hazard", targetId: id, targetCode: row.hazard_code, detail: row.location });
     return sendJson(res, { success: true });
@@ -1113,10 +1139,10 @@ async function handleHazards(req, res, url, id, user) {
       return sendJson(res, rowToHazard(updated.rows[0], today));
     }
 
-    // —— 普通字段修改（仅管理员）——
-    if (!["safety_admin", "admin"].includes(user.role)) {
-      return sendJson(res, { error: { code: "FORBIDDEN", message: "仅安全管理员/系统管理员可修改隐患内容" } }, 403);
-    }
+      // —— 普通字段修改（仅系统管理员）——
+      if (user.role !== "admin") {
+        return sendJson(res, { error: { code: "FORBIDDEN", message: "仅系统管理员可修改隐患内容" } }, 403);
+      }
 
     const sets = []; const vals = [];
     const map = {
@@ -2283,9 +2309,13 @@ const server = http.createServer(async (req, res) => {
       // 说明：系统管理员（admin 角色）是管理岗，不作为整改责任人出现在列表里。
       if (p === "/api/user-options") {
         const r = await pool.query(
-          "SELECT id, user_name, role FROM users WHERE role <> 'admin' ORDER BY role, user_name"
+          "SELECT id, user_name, role, department FROM users WHERE role <> 'admin' "
+          + "ORDER BY COALESCE(department, '\uffff'), user_name"
         );
-        return sendJson(res, { items: r.rows.map((u) => ({ id: u.id, userName: u.user_name, role: u.role })) });
+        return sendJson(res, {
+          departments: DEPARTMENTS,
+          items: r.rows.map((u) => ({ id: u.id, userName: u.user_name, role: u.role, department: u.department || "" })),
+        });
       }
 
       // 未修改初始密码的用户：除「改密 / 登出 / 会话查询」（都在 /api/auth 下）外一律拒绝。
