@@ -140,7 +140,42 @@ function readAsDataUrl(file) {
  */
 const attOf = (x) => (typeof x === "string" ? { u: x, n: "" } : { u: (x && x.u) || "", n: (x && x.n) || "" });
 
-// 附件上传控件：选择即上传，返回 state（含 payload() 供提交）
+/**
+ * 日期输入体验优化：**点这一格的任意位置都能弹出日历**。
+ *
+ * 为什么需要：浏览器原生 <input type="date"> 只有点右侧那个小日历图标才弹日历，
+ * 点文字区域只是聚焦、不弹 —— 用户得"瞄着小图标点"，很不顺手。
+ *
+ * 做法：全局事件委托（一处生效，日后新增的日期框自动受益）
+ *   · 点到日期输入框本身（且不在右侧图标区）→ 调 showPicker()
+ *   · 点到该输入框所在的整格（含标签文字）→ 聚焦后再调 showPicker()
+ *   · 不支持 showPicker() 的老浏览器自动跳过，退回原生行为
+ */
+function initDatePickerUX() {
+  document.addEventListener("click", (e) => {
+    const target = e.target;
+    if (!(target instanceof Element)) return;
+
+    let input = target.closest('input[type="date"]');
+    if (!input) {
+      // 点到标签或该格空白处：取其所在格里的日期框
+      const field = target.closest(".field");
+      if (field) input = field.querySelector('input[type="date"]');
+    }
+    if (!input || input.disabled || input.readOnly) return;
+    if (typeof input.showPicker !== "function") return;   // 老浏览器：保持原生行为
+
+    // 点在右侧原生图标区时浏览器自己会弹，避免重复调用把它关掉
+    if (target === input) {
+      const r = input.getBoundingClientRect();
+      if (e.clientX - r.left >= r.width - 28) return;
+    }
+    try {
+      input.focus({ preventScroll: true });
+      input.showPicker();
+    } catch { /* 已处于打开状态等，忽略即可 */ }
+  }, true);
+}
 function photoUploaderHtml(key, label, hint) {
   return `<div class="field span-2">
     <label>${esc(label)}</label>
@@ -153,6 +188,7 @@ function photoUploaderHtml(key, label, hint) {
   </div>`;
 }
 
+// 附件上传控件：选择即上传，返回 state（含 payload() 供提交）
 function initPhotoUploader(key) {
   const state = { items: [] };
   const grid = $("#" + key + "Grid");
@@ -2012,6 +2048,7 @@ function router() {
       const dc = e.target.closest("[data-doc]");
       if (dc) { e.preventDefault(); window.open(dc.getAttribute("data-doc"), "_blank"); }
     });
+    initDatePickerUX();       // 日期框：点整格任意位置都能弹日历
     // 先取公司名等信息，再渲染，避免侧边栏/登录页出现"先空后跳"
     await loadAppInfo();
     if (!location.hash) location.hash = currentUser() ? "#/profile" : "#/login";
