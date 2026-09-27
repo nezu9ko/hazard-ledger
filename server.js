@@ -1449,30 +1449,32 @@ function formVals(h) {
   };
 }
 
-/** ① 检查隐患问题整改通知单（14 列） */
+/** ① 检查隐患问题整改通知单（14 列）
+ *  ⚠️ 与原表逐格对齐的要点：
+ *    · 表头**只有一行**（第 3 行）；「复查时间」「完成情况」各是**一个单元格**，
+ *      格内用换行显示为两行 —— 不是两个格子、也不是两行表头
+ *    · 检查说明段与落款（部门 + 日期）同处 **A2 一个合并单元格**内，用换行分隔
+ *    · 末行落款是 **A:M 一个合并单元格**
+ *    · 全表只有 3 个合并区：A1:N1、A2:N2、末行 A:M
+ */
 function sheetNotice(rows, meta) {
   const ORG = ORG_NAME();
   const NCOL = 14;
+  // 说明段 + 落款（同一格内换行；落款用空格右推，与原表一致）
+  const IND = " ".repeat(55);
+  const noteCell = `${meta.note}\n${IND}${noticeDept()}\n${IND}${cnDate(meta.today)}`;
+
   const out = [];
-  out.push({ h: 34, cells: [{ v: `${ORG}检查问题整改通知单`, s: XS.TITLE }] });
-  out.push({ h: 8, cells: [] });
-  out.push({ h: 60, cells: [{ v: meta.note, s: XS.NOTE }] });
-  out.push({ h: 8, cells: [] });
-  out.push({ cells: [...Array(11).fill(null), { v: noticeDept(), s: XS.RIGHT }, null, null] });
-  out.push({ cells: [...Array(11).fill(null), { v: cnDate(meta.today), s: XS.RIGHT }, null, null] });
-  out.push({ h: 8, cells: [] });
+  out.push({ h: 36, cells: [{ v: `${ORG}检查问题整改通知单`, s: XS.TITLE }] });
+  out.push({ h: 96, cells: [{ v: noteCell, s: XS.NOTE }] });
+  // —— 表头：单行 14 格 ——
   out.push({
-    h: 30, cells: [
+    h: 32, cells: [
       { v: "序号", s: XS.TH }, { v: "被检查单位", s: XS.TH }, { v: "具体地点", s: XS.TH }, { v: "隐患类别", s: XS.TH },
       { v: "存在的问题或隐患", s: XS.TH }, { v: "问题或隐患图片", s: XS.TH }, { v: "整改措施", s: XS.TH },
       { v: "整改期限", s: XS.TH }, { v: "整改责任人", s: XS.TH }, { v: "整改资金（元）", s: XS.TH },
-      { v: "复查", s: XS.TH }, { v: "完成", s: XS.TH }, { v: "复查人", s: XS.TH }, { v: "备注", s: XS.TH },
-    ],
-  });
-  out.push({
-    h: 30, cells: [
-      null, null, null, null, null, null, null, null, null, null,
-      { v: "时间", s: XS.TH }, { v: "情况", s: XS.TH }, null, null,
+      { v: "复查\n时间", s: XS.TH }, { v: "完成\n情况", s: XS.TH },
+      { v: "复查人", s: XS.TH }, { v: "备注", s: XS.TH },
     ],
   });
   rows.forEach((h, i) => {
@@ -1487,24 +1489,32 @@ function sheetNotice(rows, meta) {
     });
   });
   const foot = out.length + 1;
-  out.push({ h: 30, cells: [{ v: "签发单位负责人：", s: XS.NOTE }, null, null, null, { v: "接收单位负责人：", s: XS.NOTE }] });
+  out.push({ h: 32, cells: [{ v: `签发单位负责人：${" ".repeat(40)}接收单位负责人：`, s: XS.NOTE }] });
   return {
     sheetName: "检查隐患问题整改通知单",
     cols: [24, 44, 56, 56, 143, 100, 248, 66, 66, 59, 114, 49, 51, 63].map(pxToW),
     rows: out,
-    merges: [`A1:${colName(NCOL)}1`, `A3:${colName(NCOL)}3`, `L5:${colName(NCOL)}5`, `L6:${colName(NCOL)}6`, `A${foot}:C${foot}`, `E${foot}:${colName(NCOL)}${foot}`],
+    merges: [`A1:${colName(NCOL)}1`, `A2:${colName(NCOL)}2`, `A${foot}:M${foot}`],
   };
 }
 
-/** ② 检查问题销号申请单（13 列） */
+/** ② 检查问题销号申请单（13 列）
+ *  ⚠️ 与原表逐格对齐的要点：
+ *    · 第 2 行的「单位：…」与「日期：…」同处 **A2 一个合并单元格**内，用空格右推
+ *    · 表头只有一行（第 3 行）
+ *    · 末行落款是 **A:M 一个合并单元格**；其后另有一个空行（A:M 合并）
+ */
 function sheetClosure(rows, meta) {
   const ORG = ORG_NAME();
   const NCOL = 13;
+  const head = `单位：${ORG}`;
+  const dateTxt = `日期：${cnDate(meta.today)}`;
+  const pad = Math.max(6, 95 - head.length * 2 - dateTxt.length);
   const out = [];
-  out.push({ h: 34, cells: [{ v: `${ORG}检查问题销号申请单`, s: XS.TITLE }] });
-  out.push({ cells: [{ v: `单位：${ORG}`, s: XS.NOTE }, null, null, null, null, null, null, null, null, null, null, { v: `日期：${cnDate(meta.today)}`, s: XS.NOTE }, null] });
+  out.push({ h: 36, cells: [{ v: `${ORG}检查问题销号申请单`, s: XS.TITLE }] });
+  out.push({ h: 26, cells: [{ v: head + " ".repeat(pad) + dateTxt, s: XS.NOTE }] });
   out.push({
-    h: 30, cells: [
+    h: 32, cells: [
       { v: "序号", s: XS.TH }, { v: "被检查单位", s: XS.TH }, { v: "具体地点", s: XS.TH }, { v: "隐患类别", s: XS.TH },
       { v: "存在隐患或问题", s: XS.TH }, { v: "采取的整改措施", s: XS.TH }, { v: "整改期限", s: XS.TH },
       { v: "整改责任人", s: XS.TH }, { v: "整改情况", s: XS.TH }, { v: "完成时间", s: XS.TH },
@@ -1522,14 +1532,16 @@ function sheetClosure(rows, meta) {
       ],
     });
   });
-  const r1 = out.length + 1; const r2 = out.length + 2;
-  out.push({ h: 30, cells: [{ v: "        整改单位负责人：", s: XS.NOTE }, null, null, null, { v: "主管部门负责人：", s: XS.NOTE }] });
-  out.push({ h: 20, cells: [] });
+  // 印版：落款行之后另有 **2 个** 合并空行（A:M），一并还原
+  const r1 = out.length + 1; const r2 = out.length + 2; const r3 = out.length + 3;
+  out.push({ h: 30, cells: [{ v: `整改单位负责人：${" ".repeat(38)}主管部门负责人：`, s: XS.NOTE }] });
+  out.push({ h: 20, cells: [{ v: "", s: XS.NOTE }] });
+  out.push({ h: 20, cells: [{ v: "", s: XS.NOTE }] });
   return {
     sheetName: "检查问题销号申请单",
     cols: [24, 95, 70, 56, 200, 280, 60, 70, 60, 80, 60, 90, 90].map(pxToW),
     rows: out,
-    merges: [`A1:${colName(NCOL)}1`, `A2:${colName(NCOL)}2`, `A${r1}:C${r1}`, `E${r1}:${colName(NCOL)}${r1}`, `A${r2}:${colName(NCOL)}${r2}`],
+    merges: [`A1:${colName(NCOL)}1`, `A2:${colName(NCOL)}2`, `A${r2}:M${r2}`, `A${r3}:M${r3}`],
   };
 }
 
@@ -1566,6 +1578,38 @@ function sheetLedger(rows, meta) {
   };
 }
 
+/** ④ 原始检查记录表（6 列）
+ *  对应印版第 1 张表：只有标题、单行表头、数据，末行为「检查人员签字：」（A:F 合并）。
+ */
+function sheetRaw(rows) {
+  const NCOL = 6;
+  const out = [];
+  out.push({ h: 34, cells: [{ v: "原始检查记录表", s: XS.TITLE }] });
+  out.push({
+    h: 30, cells: [
+      { v: "序号", s: XS.TH }, { v: "日期", s: XS.TH }, { v: "检查部位", s: XS.TH },
+      { v: "现场具体隐患", s: XS.TH }, { v: "检查人", s: XS.TH }, { v: "备注", s: XS.TH },
+    ],
+  });
+  rows.forEach((h, i) => {
+    out.push({
+      h: 46, cells: [
+        { v: i + 1, s: XS.CENTER }, { v: slashDate(h.inspectDate), s: XS.CENTER },
+        { v: h.location || "", s: XS.CENTER }, { v: h.description || "", s: XS.LEFT },
+        { v: h.inspector || "", s: XS.CENTER }, { v: "", s: XS.CENTER },
+      ],
+    });
+  });
+  const foot = out.length + 1;
+  out.push({ h: 30, cells: [{ v: "检查人员签字：", s: XS.NOTE }] });
+  return {
+    sheetName: "原始检查记录",
+    cols: [44, 114, 130, 380, 120, 160].map(pxToW),
+    rows: out,
+    merges: [`A1:F1`, `A${foot}:F${foot}`],
+  };
+}
+
 /**
  * 导出隐患台账。支持与列表一致的筛选参数。
  *   GET /api/export?format=xlsx|csv&template=notice|closure|ledger
@@ -1579,9 +1623,14 @@ async function handleExport(res, url, user) {
   const format = (q.get("format") || "xlsx").toLowerCase();
   const today = localDateStr();
 
-  // template：三套纸质表单；未指定则导出旧的扁平台账
-  const TEMPLATE_NAMES = { notice: "检查问题整改通知单", closure: "检查问题销号申请单", ledger: "安全隐患整改治理台账" };
-  const TEMPLATE_BUILDERS = { notice: sheetNotice, closure: sheetClosure, ledger: sheetLedger };
+  // template：四套纸质表单；未指定则导出旧的扁平台账
+  const TEMPLATE_NAMES = {
+    notice: "检查问题整改通知单",
+    closure: "检查问题销号申请单",
+    ledger: "安全隐患整改治理台账",
+    raw: "原始检查记录表",
+  };
+  const TEMPLATE_BUILDERS = { notice: sheetNotice, closure: sheetClosure, ledger: sheetLedger, raw: sheetRaw };
   const tRaw = (q.get("template") || "").trim().toLowerCase();
   const template = TEMPLATE_BUILDERS[tRaw] ? tRaw : "";
 
