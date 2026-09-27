@@ -1371,14 +1371,16 @@ function renderHazardNew() {
           <div class="field"><label>隐患等级 <span class="req">*</span></label>${sel("level", LEVEL_LABELS, "请选择隐患等级")}</div>
           ${photoUploaderHtml("hazardPhotos", "隐患照片", `最多 ${MAX_PHOTOS} 张，选择后自动上传；点击缩略图可放大`)}
         </div>
-        <div class="section-title" style="margin-top:26px">整改信息</div>
+        <div class="section-title" style="margin-top:26px">整改安排</div>
         <div class="form-grid">
-          <div class="field span-2"><label>整改措施 <span class="req">*</span></label><textarea class="textarea" id="rectifyMeasure" placeholder="请描述具体整改措施"></textarea></div>
-          <div class="field"><label>整改责任人 <span class="req">*</span></label><input class="input" id="rectifyPerson" placeholder="请输入整改责任人姓名"></div>
-          <div class="field"><label>整改资金（元） <span class="req">*</span></label><input class="input" type="number" min="0" id="rectifyFund" placeholder="请输入整改资金"></div>
+          <div class="field"><label>整改责任人 <span class="req">*</span></label>
+            <select class="select" id="rectifyUser"><option value="">请选择整改责任人</option></select></div>
           <div class="field"><label>计划完成时限 <span class="req">*</span></label><input class="input" type="date" id="planDeadline"></div>
-          <div class="field span-2"><label>应急预案</label><textarea class="textarea" id="emergencyPlan" placeholder="请输入应急预案（选填）"></textarea></div>
-          ${photoUploaderHtml("rectifyPhotos", "整改照片", `最多 ${MAX_PHOTOS} 张，可登记时上传，也可整改完成后补充`)}
+        </div>
+        <div class="callout-info" style="margin-top:12px">
+          ${icon("info", 15)}
+          <div><strong>整改措施、整改资金、应急预案不在此填写</strong> —— 登记只记录"发现了什么问题"；
+            具体怎么改，由<strong>整改责任人</strong>在整改时点「开始整改」填写，符合"谁整改、谁负责"的要求。</div>
         </div>
         <div class="err-text" id="formErr" style="display:none;margin-top:14px"></div>
         <div style="display:flex;justify-content:flex-end;gap:12px;margin-top:24px;padding-top:20px;border-top:1px solid #f1f5f9">
@@ -1391,30 +1393,38 @@ function renderHazardNew() {
   bindLayout();
   $("#backBtn").onclick = () => history.back();
   const hazardPhotos = initPhotoUploader("hazardPhotos");
-  const rectifyPhotos = initPhotoUploader("rectifyPhotos");
+
+  // 整改责任人：从系统用户里选（与账号绑定，"我的待办"才能按人精确提醒）
+  void (async () => {
+    try {
+      const r = await api.get("/user-options");
+      const opt = (r.items || []).map((u) => `<option value="${esc(u.id)}" data-name="${esc(u.userName)}">${esc(u.userName)}</option>`).join("");
+      $("#rectifyUser").innerHTML = `<option value="">请选择整改责任人</option>${opt}`;
+    } catch { /* 拿不到用户列表时保持空，提交时会提示 */ }
+  })();
 
   $("#hazardForm").onsubmit = async (e) => {
     e.preventDefault();
     const errEl = $("#formErr"); errEl.style.display = "none";
     const get = (id) => $("#" + id).value;
+    const userSel = $("#rectifyUser");
     const payload = {
       inspectDate: get("inspectDate"), inspector: get("inspector").trim(),
       location: get("location").trim(), description: get("description").trim(),
       category: get("category"), level: get("level"),
-      rectifyMeasure: get("rectifyMeasure").trim(), rectifyPerson: get("rectifyPerson").trim(),
-      rectifyFund: get("rectifyFund"), planDeadline: get("planDeadline"),
-      emergencyPlan: get("emergencyPlan").trim() || undefined,
+      // 整改责任人：同时送用户ID（绑定账号）与姓名（打印/导出用）
+      rectifyUserId: userSel.value,
+      rectifyPerson: userSel.selectedOptions[0]?.dataset?.name || "",
+      planDeadline: get("planDeadline"),
       hazardPhotos: hazardPhotos.payload(),
-      rectifyPhotos: rectifyPhotos.payload(),
     };
-    for (const [k, label] of [["inspectDate", "排查日期"], ["inspector", "排查人员"], ["location", "隐患所在部位"], ["description", "隐患描述"], ["category", "隐患类别"], ["level", "隐患等级"], ["rectifyMeasure", "整改措施"], ["rectifyPerson", "整改责任人"], ["rectifyFund", "整改资金"], ["planDeadline", "计划完成时限"]]) {
+    for (const [k, label] of [["inspectDate", "排查日期"], ["inspector", "排查人员"], ["location", "隐患所在部位"], ["description", "隐患描述"], ["category", "隐患类别"], ["level", "隐患等级"], ["rectifyPerson", "整改责任人"], ["planDeadline", "计划完成时限"]]) {
       if (!payload[k]) { errEl.textContent = `请填写${label}`; errEl.style.display = "block"; return; }
     }
-    if (Number(payload.rectifyFund) < 0) { errEl.textContent = "整改资金不能为负数"; errEl.style.display = "block"; return; }
     const btn = $("#submitBtn"); btn.disabled = true; btn.textContent = "提交中...";
     try {
       await api.post("/hazards", payload);
-      toast("登记成功", "隐患已成功登记，即将返回台账列表");
+      toast("登记成功", "隐患已登记，待整改责任人填写整改信息");
       location.hash = "#/hazards";
     } catch (err) {
       errEl.textContent = err.message; errEl.style.display = "block";
@@ -1446,7 +1456,11 @@ async function renderHazardDetail(id) {
   const infoRow = (label, value) => `<div class="info-item"><div class="i-label">${esc(label)}</div><div class="i-value">${esc(value) || "—"}</div></div>`;
   const isClosed = h.status === "closed";
   const canReview = ["reviewer", "safety_admin", "admin"].includes(currentUser()?.role);
-  const canRectify = ["entry", "safety_admin", "admin"].includes(currentUser()?.role);
+  // 整改信息由**整改责任人本人**填写；管理员可代办。历史数据未绑定账号则放开。
+  const me0 = currentUser();
+  const canRectify = ["safety_admin", "admin"].includes(me0?.role)
+    || (!!h.rectifyUserId && h.rectifyUserId === me0?.id)
+    || !h.rectifyUserId;
 
   const reviewForm = `
     <form id="reviewForm">
@@ -1509,14 +1523,14 @@ async function renderHazardDetail(id) {
         <div class="rectify-banner">${icon("clock", 18)}该隐患正在整改中，整改责任人：${esc(h.rectifyPerson)}</div>
         ${canReview ? reviewForm : `<div class="empty"><div class="e-title">整改中</div><div class="e-sub">等待复查人员复查闭环</div></div>`}`
       : `
-        ${canRectify ? `<div class="rectify-banner pending">
-          <div>
-            <div style="font-weight:600">该隐患待整改</div>
-            <div style="font-size:13px;color:#6b7280;margin-top:2px">整改责任人：${esc(h.rectifyPerson)}，点击右侧按钮进入整改流程</div>
-          </div>
-          <button class="btn btn-primary" id="btnStartRectify">${icon("play", 16)}开始整改</button>
-        </div>` : `<div class="empty"><div class="e-title">待整改</div><div class="e-sub">当前角色无权开始整改</div></div>`}
-        ${canReview ? `<div style="font-size:12.5px;color:#9ca3af;margin-top:12px">提示：需先由录入人员/安全管理员「开始整改」后，方可进行复查闭环。</div>` : ""}`}
+          ${canRectify ? `<div class="rectify-banner pending">
+            <div>
+              <div style="font-weight:600">该隐患待整改</div>
+              <div style="font-size:13px;color:#6b7280;margin-top:2px">整改责任人：${esc(h.rectifyPerson || "未指定")} —— 请由责任人填写整改措施后进入整改</div>
+            </div>
+            <button class="btn btn-primary" id="btnStartRectify">${icon("play", 16)}填写整改信息</button>
+          </div>` : `<div class="empty"><div class="e-title">待整改</div><div class="e-sub">整改信息由整改责任人（${esc(h.rectifyPerson || "未指定")}）填写</div></div>`}
+          ${canReview ? `<div style="font-size:12.5px;color:#9ca3af;margin-top:12px">提示：需先由整改责任人填写整改信息（进入「整改中」）后，方可进行复查闭环。</div>` : ""}`}
     </div>
   </div>`;
 
@@ -1534,20 +1548,43 @@ async function renderHazardDetail(id) {
       }
     };
   }
-  const btnSR = $("#btnStartRectify");
-  if (btnSR) {
-    btnSR.onclick = async () => {
-      btnSR.disabled = true; btnSR.textContent = "处理中...";
-      try {
-        await api.patch(`/hazards/${id}`, { action: "start-rectify" });
-        toast("已开始整改", "状态：待整改 → 整改中");
-        renderHazardDetail(id);
-      } catch (err) {
-        toast("操作失败", err.message, "err");
-        btnSR.disabled = false; btnSR.innerHTML = `${icon("play", 16)}开始整改`;
-      }
-    };
-  }
+    const btnSR = $("#btnStartRectify");
+    if (btnSR) {
+      // 「开始整改」不再直接改状态，而是**先弹出表单让整改责任人填写整改信息**
+      // （整改措施 / 整改资金 / 应急预案）—— 隐患登记时只记"发现了什么"，
+      // 怎么改由责任人在真正动手时填写，做到"谁整改、谁负责"。
+      btnSR.onclick = () => {
+        openModal({
+          title: "填写整改信息",
+          desc: `请填写本隐患的整改措施等信息，提交后状态转为「整改中」。责任人：${h.rectifyPerson || "—"}`,
+          bodyHtml: `
+            <div class="field"><label>整改措施 <span class="req">*</span></label>
+              <textarea class="textarea" id="rfMeasure" style="min-height:78px" placeholder="请描述具体怎么整改，如：更换XX、增设XX、培训XX"></textarea></div>
+            <div class="field"><label>整改资金（元）</label>
+              <input class="input" type="number" min="0" id="rfFund" placeholder="可填 0，事后在台账里可改"></div>
+            <div class="field"><label>应急预案</label>
+              <textarea class="textarea" id="rfEmergency" placeholder="整改期间的临时管控措施（选填）"></textarea></div>
+            <div class="err-text" id="rfErr" style="display:none"></div>`,
+          confirmText: "提交并开始整改",
+          onConfirm: async (overlay) => {
+            const measure = $("#rfMeasure", overlay).value.trim();
+            const fund = $("#rfFund", overlay).value;
+            const errEl = $("#rfErr", overlay);
+            const fail = (m) => { errEl.textContent = m; errEl.style.display = "block"; return false; };
+            if (!measure) return fail("请填写整改措施");
+            if (fund !== "" && (Number(fund) < 0 || Number.isNaN(Number(fund)))) return fail("整改资金不能为负数");
+            try {
+              await api.patch(`/hazards/${id}`, {
+                action: "start-rectify", rectifyMeasure: measure, rectifyFund: fund,
+                emergencyPlan: $("#rfEmergency", overlay).value.trim() || undefined,
+              });
+            } catch (err) { return fail(err.message); }
+            toast("已开始整改", "整改信息已保存，状态：待整改 → 整改中");
+            renderHazardDetail(id);
+          },
+        });
+      };
+    }
   const rf = $("#reviewForm");
   if (rf) {
     rf.onsubmit = async (e) => {
@@ -1873,8 +1910,9 @@ async function loadReminders() {
       </div>
     </div>`;
 
-  const canReview = ["reviewer", "safety_admin", "admin"].includes(currentUser()?.role);
-  const canRectify = ["entry", "safety_admin", "admin"].includes(currentUser()?.role);
+    const canReview = ["reviewer", "safety_admin", "admin"].includes(currentUser()?.role);
+    // 任何角色都可能被指派为整改责任人，故不再按角色限制
+    const canRectify = !!currentUser();
 
   box.innerHTML = `
     ${block("整改提醒", "alert", d.rectify, "没有需要您整改的隐患",

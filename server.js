@@ -353,8 +353,10 @@ function rowToHazard(r, today) {
     category: r.category,
     level: r.level,
     rectifyMeasure: r.rectify_measure,
-    rectifyPerson: r.rectify_person,
-    rectifyFund: r.rectify_fund == null ? "0" : String(r.rectify_fund),
+      rectifyPerson: r.rectify_person,
+      rectifyUserId: r.rectify_user_id ?? null,
+      rectifyFund: r.rectify_fund == null || String(r.rectify_fund).trim() === ""
+        ? "" : String(Number(r.rectify_fund)),   // NUMERIC 会带 .00，转成干净的数字串
     planDeadline: r.plan_deadline,
     emergencyPlan: r.emergency_plan ?? null,
     status,
@@ -498,8 +500,9 @@ const SCHEMA_COMMENTS = [
   ["COLUMN", "hazard", "description", "隐患描述"],
   ["COLUMN", "hazard", "category", "隐患类别：equipment设备设施 / operation作业行为 / fire消防安全 / electrical电气安全 / environment环境安全 / management安全管理"],
   ["COLUMN", "hazard", "level", "隐患等级：major重大 / general一般"],
-  ["COLUMN", "hazard", "rectify_measure", "整改措施"],
-  ["COLUMN", "hazard", "rectify_person", "整改责任人"],
+  ["COLUMN", "hazard", "rectify_measure", "整改措施（登记时不填，由整改责任人「开始整改」时填写）"],
+  ["COLUMN", "hazard", "rectify_person", "整改责任人姓名（登记时从系统用户中选择，冗余存姓名便于打印/导出）"],
+  ["COLUMN", "hazard", "rectify_user_id", "整改责任人用户ID（与 rectify_person 对应；用于「我的待办」按账号精确匹配。历史数据可能为空）"],
   ["COLUMN", "hazard", "rectify_fund", "整改资金（单位：元）"],
   ["COLUMN", "hazard", "plan_deadline", "计划完成日期；未闭环且已过此日期即判为「逾期」（逾期是实时计算的派生状态，不落库）"],
   ["COLUMN", "hazard", "emergency_plan", "应急预案"],
@@ -594,7 +597,7 @@ async function initDatabase() {
       description TEXT NOT NULL,
       category TEXT NOT NULL,
       level TEXT NOT NULL,
-      rectify_measure TEXT NOT NULL,
+      rectify_measure TEXT,                            -- 登记时不填，由整改责任人在「开始整改」时填写
       rectify_person TEXT NOT NULL,
       rectify_fund NUMERIC(14,2) NOT NULL DEFAULT 0,
       plan_deadline TEXT NOT NULL,
@@ -612,6 +615,10 @@ async function initDatabase() {
     );
     ALTER TABLE hazard ADD COLUMN IF NOT EXISTS hazard_photos TEXT;
     ALTER TABLE hazard ADD COLUMN IF NOT EXISTS rectify_photos TEXT;
+    ALTER TABLE hazard ADD COLUMN IF NOT EXISTS rectify_user_id TEXT;   -- 整改责任人用户ID（用于按账号匹配"我的待办"）
+    -- 流程调整：登记时只填隐患信息，整改措施改由整改责任人在「开始整改」时填写，
+    -- 因此老库上原有的 NOT NULL 约束要去掉（新库建表时已允许为空）。
+    ALTER TABLE hazard ALTER COLUMN rectify_measure DROP NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_hazard_status ON hazard(status);
     CREATE INDEX IF NOT EXISTS idx_hazard_inspect_date ON hazard(inspect_date);
     CREATE INDEX IF NOT EXISTS idx_hazard_plan_deadline ON hazard(plan_deadline);
@@ -949,14 +956,14 @@ async function handleHazards(req, res, url, id, user) {
         return sendJson(res, { deleted: info.rowCount });
       }
 
-      const required = ["inspectDate", "inspector", "location", "description", "category", "level", "rectifyMeasure", "rectifyPerson", "rectifyFund", "planDeadline"];
+      // 登记环节只填**隐患信息** + 整改责任人 + 计划完成时限；
+      // 整改措施 / 整改资金 / 应急预案 由整改责任人在「开始整改」时填写（见 PATCH action=start-rectify）。
+      const required = ["inspectDate", "inspector", "location", "description", "category", "level", "rectifyPerson", "planDeadline"];
       for (const k of required) {
         if (body[k] === undefined || body[k] === null || String(body[k]).trim() === "") return badRequest(res, `字段 ${k} 不能为空`);
       }
       if (!LEVELS.includes(body.level)) return badRequest(res, "隐患等级非法");
       if (!CATEGORIES.includes(body.category)) return badRequest(res, "隐患类别非法");
-      const fund = Number(body.rectifyFund);
-      if (isNaN(fund) || fund < 0) return badRequest(res, "整改资金格式错误");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(body.inspectDate)) return badRequest(res, "排查日期格式错误");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(body.planDeadline)) return badRequest(res, "计划完成时限格式错误");
       if (!isRealDate(body.inspectDate)) return badRequest(res, "排查日期不是有效日期");
@@ -977,12 +984,12 @@ async function handleHazards(req, res, url, id, user) {
       const rectifyPhotos = normalizePhotos(body.rectifyPhotos);
       await pool.query(
         `INSERT INTO hazard (id,hazard_code,inspect_date,inspector,location,description,category,level,
-          rectify_measure,rectify_person,rectify_fund,plan_deadline,emergency_plan,status,hazard_photos,rectify_photos)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',$14,$15)`,
+          rectify_person,rectify_user_id,plan_deadline,status,hazard_photos,rectify_photos)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12,$13)`,
         [newId, hazardCode, body.inspectDate, String(body.inspector).trim(), String(body.location).trim(),
-          String(body.description).trim(), body.category, body.level, String(body.rectifyMeasure).trim(),
-          String(body.rectifyPerson).trim(), String(fund), body.planDeadline,
-          body.emergencyPlan ? String(body.emergencyPlan).trim() : null,
+          String(body.description).trim(), body.category, body.level,
+          String(body.rectifyPerson).trim(), body.rectifyUserId ? String(body.rectifyUserId).trim() : null,
+          body.planDeadline,
           hazardPhotos.length ? JSON.stringify(hazardPhotos) : null,
           rectifyPhotos.length ? JSON.stringify(rectifyPhotos) : null]
       );
@@ -1025,7 +1032,10 @@ async function handleHazards(req, res, url, id, user) {
         if (!body[k] || String(body[k]).trim() === "") return badRequest(res, `字段 ${k} 不能为空`);
       }
       if (row.status === "closed") return badRequest(res, "该隐患已闭环");
-      if (row.status === "pending") return badRequest(res, "请先「开始整改」，再进行复查闭环");
+      if (row.status === "pending") return badRequest(res, "请先由整改责任人「开始整改」并填写整改信息，再进行复查闭环");
+      if (!row.rectify_measure || !String(row.rectify_measure).trim()) {
+        return badRequest(res, "该隐患尚未填写整改措施（应由整改责任人开始整改时填写），无法复查");
+      }
       await pool.query(
         `UPDATE hazard SET status='closed', actual_complete_date=$1, reviewer=$2, review_date=$3, review_result=$4,
           closed_at=NOW(), updated_at=NOW() WHERE id=$5`,
@@ -1036,15 +1046,34 @@ async function handleHazards(req, res, url, id, user) {
       return sendJson(res, rowToHazard(updated.rows[0], today));
     }
 
-    // —— 开始整改（待整改 → 整改中）——
+    // —— 开始整改：由**整改责任人**在此填写整改信息（整改措施/资金/应急预案）——
+    // 隐患登记时只填隐患信息，整改信息在真正动手整改时才由责任人补齐。
     if (body.action === "start-rectify") {
-      if (!["entry", "safety_admin", "admin"].includes(user.role)) {
-        return sendJson(res, { error: { code: "FORBIDDEN", message: "当前角色无权开始整改" } }, 403);
+      const isOwner = !!(row.rectify_user_id && row.rectify_user_id === user.id);
+      const isManager = ["safety_admin", "admin"].includes(user.role);
+      // 有明确责任人时只允许本人或管理员操作；历史数据没绑账号则放开
+      if (row.rectify_user_id && !isOwner && !isManager) {
+        return sendJson(res, { error: { code: "FORBIDDEN", message: `只有整改责任人（${row.rectify_person}）或管理员可以填写整改信息` } }, 403);
       }
       if (row.status === "closed") return badRequest(res, "该隐患已闭环，无法再整改");
       if (row.status === "rectifying") return badRequest(res, "该隐患已在整改中");
-      await pool.query("UPDATE hazard SET status='rectifying', updated_at=NOW() WHERE id=$1", [id]);
-      await logOp(user, "start_rectify", { targetType: "hazard", targetId: id, targetCode: row.hazard_code, detail: "状态：待整改 → 整改中" });
+
+      const measure = String(body.rectifyMeasure ?? "").trim();
+      if (!measure) return badRequest(res, "请填写整改措施");
+      const fundRaw = body.rectifyFund;
+      const fund = (fundRaw === undefined || fundRaw === null || String(fundRaw).trim() === "") ? 0 : Number(fundRaw);
+      if (Number.isNaN(fund) || fund < 0) return badRequest(res, "整改资金格式错误");
+      const emergency = body.emergencyPlan ? String(body.emergencyPlan).trim() : null;
+
+      await pool.query(
+        `UPDATE hazard SET status='rectifying', rectify_measure=$1, rectify_fund=$2, emergency_plan=$3,
+          updated_at=NOW() WHERE id=$4`,
+        [measure, String(fund), emergency, id]
+      );
+      await logOp(user, "start_rectify", {
+        targetType: "hazard", targetId: id, targetCode: row.hazard_code,
+        detail: `填写整改信息并开始整改（措施 ${measure.slice(0, 30)}｜资金 ${fund} 元）`,
+      });
       const updated = await pool.query("SELECT * FROM hazard WHERE id = $1", [id]);
       return sendJson(res, rowToHazard(updated.rows[0], today));
     }
@@ -1057,7 +1086,8 @@ async function handleHazards(req, res, url, id, user) {
     const sets = []; const vals = [];
     const map = {
       inspectDate: "inspect_date", inspector: "inspector", location: "location", description: "description",
-      rectifyMeasure: "rectify_measure", rectifyPerson: "rectify_person", planDeadline: "plan_deadline", emergencyPlan: "emergency_plan",
+      rectifyMeasure: "rectify_measure", rectifyPerson: "rectify_person", rectifyUserId: "rectify_user_id",
+      planDeadline: "plan_deadline", emergencyPlan: "emergency_plan",
     };
     for (const [k, col] of Object.entries(map)) {
       if (body[k] !== undefined) { vals.push(body[k]); sets.push(`${col} = $${vals.length}`); }
@@ -2211,6 +2241,16 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith("/api/")) {
       sessionUser = await getSessionUser(bearerToken(req));
       if (!sessionUser) return sendJson(res, { error: { code: "UNAUTHORIZED", message: "未登录或登录已过期，请重新登录" } }, 401);
+
+      // 「可选整改责任人」下拉数据：任意登录用户可用（录入人员也需要选责任人）。
+      // 只回 id / 姓名 / 角色，不含任何凭据信息。
+      // 说明：系统管理员（admin 角色）是管理岗，不作为整改责任人出现在列表里。
+      if (p === "/api/user-options") {
+        const r = await pool.query(
+          "SELECT id, user_name, role FROM users WHERE role <> 'admin' ORDER BY role, user_name"
+        );
+        return sendJson(res, { items: r.rows.map((u) => ({ id: u.id, userName: u.user_name, role: u.role })) });
+      }
 
       // 未修改初始密码的用户：除「改密 / 登出 / 会话查询」（都在 /api/auth 下）外一律拒绝。
       // 说明：前端本来就会弹窗提醒改密，但那只是体验层，直接调 API 就能绕过；
