@@ -1262,9 +1262,10 @@ function colName(n) { let s = ""; while (n > 0) { const m = (n - 1) % 26; s = St
 
 /**
  * 单元格样式索引 —— 与 styles.xml 中 cellXfs 的顺序**必须一一对应**。
- * 0 默认 / 1 大标题 / 2 表头 / 3 正文居中 / 4 正文左对齐 / 5 说明段落 / 6 粗体 / 7 落款右对齐
+ * 0 默认 / 1 大标题 / 2 表头 / 3 正文居中 / 4 正文左对齐 / 5 说明段落（左上）
+ * 6 粗体 / 7 右对齐（垂直居中）/ 8 右对齐+底端对齐（用于落款放右下角）/ 9 左对齐+顶端（同 5，语义区分）
  */
-const XS = { DEFAULT: 0, TITLE: 1, TH: 2, CENTER: 3, LEFT: 4, NOTE: 5, BOLD: 6, RIGHT: 7 };
+const XS = { DEFAULT: 0, TITLE: 1, TH: 2, CENTER: 3, LEFT: 4, NOTE: 5, BOLD: 6, RIGHT: 7, RIGHT_BOTTOM: 8, LEFT_TOP: 9 };
 
 /** styles.xml：字体/填充/边框/单元格格式四张表，供上面 XS 索引导用 */
 const XLSX_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
@@ -1281,15 +1282,17 @@ const XLSX_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sty
   + `<border><left style="thin"><color indexed="64"/></left><right style="thin"><color indexed="64"/></right>`
   + `<top style="thin"><color indexed="64"/></top><bottom style="thin"><color indexed="64"/></bottom><diagonal/></border></borders>`
   + `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>`
-  + `<cellXfs count="8">`
+  + `<cellXfs count="10">`
   + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>`                                                                                            // 0 默认
   + `<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>`   // 1 标题
   + `<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>`  // 2 表头
   + `<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>`  // 3 居中
   + `<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>`    // 4 左对齐
-  + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf>`                       // 5 说明段
+  + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf>`                       // 5 说明段（左上）
   + `<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>`       // 6 粗体
   + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" vertical="center"/></xf>`                                // 7 右对齐
+  + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" vertical="bottom" wrapText="1"/></xf>`                   // 8 右对齐+底端（落款右下角）
+  + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf>`                       // 9 左对齐+顶端
   + `</cellXfs>`
   // cellStyles 必须显式声明「常规」样式，否则 Excel/openpyxl 会报 "no default style"
   // （dxfs 也一并声明，部分阅读器要求其存在）
@@ -1450,24 +1453,25 @@ function formVals(h) {
 }
 
 /** ① 检查隐患问题整改通知单（14 列）
- *  ⚠️ 与原表逐格对齐的要点：
- *    · 表头**只有一行**（第 3 行）；「复查时间」「完成情况」各是**一个单元格**，
- *      格内用换行显示为两行 —— 不是两个格子、也不是两行表头
- *    · 检查说明段与落款（部门 + 日期）同处 **A2 一个合并单元格**内，用换行分隔
- *    · 末行落款是 **A:M 一个合并单元格**
- *    · 全表只有 3 个合并区：A1:N1、A2:N2、末行 A:M
+ *  版式要点（按使用者要求调整过）：
+ *    · 表头**只有一行**（第 3 行）；「复查时间」「完成情况」各是**一个单元格**，格内换行
+ *    · 检查说明段在 A2:K2（左上对齐）；**落款（部门 + 日期）在 L2:N2，右对齐 + 底端对齐 = 右下角**
+ *    · 表尾「签发单位负责人：」与「接收单位负责人：」**同一行、一左一右**
+ *      （左段 A:F 左对齐，右段 H:N 右对齐；中间留空）
  */
 function sheetNotice(rows, meta) {
   const ORG = ORG_NAME();
   const NCOL = 14;
-  // 说明段 + 落款（同一格内换行；落款用空格右推，与原表一致）
-  const IND = " ".repeat(55);
-  const noteCell = `${meta.note}\n${IND}${noticeDept()}\n${IND}${cnDate(meta.today)}`;
-
   const out = [];
   out.push({ h: 36, cells: [{ v: `${ORG}检查问题整改通知单`, s: XS.TITLE }] });
-  out.push({ h: 96, cells: [{ v: noteCell, s: XS.NOTE }] });
-  // —— 表头：单行 14 格 ——
+  // 行2：左=说明段（A:K），右=落款（L:N，右下角）
+  out.push({
+    h: 78, cells: [
+      { v: meta.note, s: XS.LEFT_TOP }, null, null, null, null, null, null, null, null, null, null,
+      { v: `${noticeDept()}\n${cnDate(meta.today)}`, s: XS.RIGHT_BOTTOM }, null, null,
+    ],
+  });
+  // 行3：表头（单行 14 格）
   out.push({
     h: 32, cells: [
       { v: "序号", s: XS.TH }, { v: "被检查单位", s: XS.TH }, { v: "具体地点", s: XS.TH }, { v: "隐患类别", s: XS.TH },
@@ -1489,30 +1493,44 @@ function sheetNotice(rows, meta) {
     });
   });
   const foot = out.length + 1;
-  out.push({ h: 32, cells: [{ v: `签发单位负责人：${" ".repeat(40)}接收单位负责人：`, s: XS.NOTE }] });
+  // 表尾：左右两段同一行（左段 A:F，右段 H:N）
+  out.push({
+    h: 32, cells: [
+      { v: "签发单位负责人：", s: XS.LEFT }, null, null, null, null, null, null,
+      { v: "接收单位负责人：", s: XS.RIGHT }, null, null, null, null, null, null,
+    ],
+  });
   return {
     sheetName: "检查隐患问题整改通知单",
     cols: [24, 44, 56, 56, 143, 100, 248, 66, 66, 59, 114, 49, 51, 63].map(pxToW),
     rows: out,
-    merges: [`A1:${colName(NCOL)}1`, `A2:${colName(NCOL)}2`, `A${foot}:M${foot}`],
+    merges: [
+      `A1:${colName(NCOL)}1`,
+      `A2:K2`, `L2:${colName(NCOL)}2`,
+      `A${foot}:F${foot}`, `H${foot}:${colName(NCOL)}${foot}`,
+    ],
   };
 }
 
 /** ② 检查问题销号申请单（13 列）
- *  ⚠️ 与原表逐格对齐的要点：
- *    · 第 2 行的「单位：…」与「日期：…」同处 **A2 一个合并单元格**内，用空格右推
+ *  版式要点（按使用者要求调整过）：
+ *    · 第 2 行：左段 A:F = 「单位：…」（左对齐），右段 H:M = 「日期：…」（右对齐）
  *    · 表头只有一行（第 3 行）
- *    · 末行落款是 **A:M 一个合并单元格**；其后另有一个空行（A:M 合并）
+ *    · 表尾「整改单位负责人：」与「主管部门负责人：」**同一行、一左一右**
+ *      （左段 A:F 左对齐，右段 H:M 右对齐）；其后 2 个合并空行
  */
 function sheetClosure(rows, meta) {
   const ORG = ORG_NAME();
   const NCOL = 13;
-  const head = `单位：${ORG}`;
-  const dateTxt = `日期：${cnDate(meta.today)}`;
-  const pad = Math.max(6, 95 - head.length * 2 - dateTxt.length);
   const out = [];
   out.push({ h: 36, cells: [{ v: `${ORG}检查问题销号申请单`, s: XS.TITLE }] });
-  out.push({ h: 26, cells: [{ v: head + " ".repeat(pad) + dateTxt, s: XS.NOTE }] });
+  // 行2：左=单位（A:F），右=日期（H:M）
+  out.push({
+    h: 26, cells: [
+      { v: `单位：${ORG}`, s: XS.LEFT }, null, null, null, null, null, null,
+      { v: `日期：${cnDate(meta.today)}`, s: XS.RIGHT }, null, null, null, null, null,
+    ],
+  });
   out.push({
     h: 32, cells: [
       { v: "序号", s: XS.TH }, { v: "被检查单位", s: XS.TH }, { v: "具体地点", s: XS.TH }, { v: "隐患类别", s: XS.TH },
@@ -1532,16 +1550,26 @@ function sheetClosure(rows, meta) {
       ],
     });
   });
-  // 印版：落款行之后另有 **2 个** 合并空行（A:M），一并还原
-  const r1 = out.length + 1; const r2 = out.length + 2; const r3 = out.length + 3;
-  out.push({ h: 30, cells: [{ v: `整改单位负责人：${" ".repeat(38)}主管部门负责人：`, s: XS.NOTE }] });
+  // 表尾：左右两段同一行（左段 A:F，右段 H:M），其后 2 个合并空行
+  const f1 = out.length + 1; const f2 = out.length + 2; const f3 = out.length + 3;
+  out.push({
+    h: 32, cells: [
+      { v: "整改单位负责人：", s: XS.LEFT }, null, null, null, null, null, null,
+      { v: "主管部门负责人：", s: XS.RIGHT }, null, null, null, null, null,
+    ],
+  });
   out.push({ h: 20, cells: [{ v: "", s: XS.NOTE }] });
   out.push({ h: 20, cells: [{ v: "", s: XS.NOTE }] });
   return {
     sheetName: "检查问题销号申请单",
     cols: [24, 95, 70, 56, 200, 280, 60, 70, 60, 80, 60, 90, 90].map(pxToW),
     rows: out,
-    merges: [`A1:${colName(NCOL)}1`, `A2:${colName(NCOL)}2`, `A${r2}:M${r2}`, `A${r3}:M${r3}`],
+    merges: [
+      `A1:${colName(NCOL)}1`,
+      `A2:F2`, `H2:${colName(NCOL)}2`,
+      `A${f1}:F${f1}`, `H${f1}:${colName(NCOL)}${f1}`,
+      `A${f2}:M${f2}`, `A${f3}:M${f3}`,
+    ],
   };
 }
 
