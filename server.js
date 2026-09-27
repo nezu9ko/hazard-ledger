@@ -1263,9 +1263,13 @@ function colName(n) { let s = ""; while (n > 0) { const m = (n - 1) % 26; s = St
 /**
  * 单元格样式索引 —— 与 styles.xml 中 cellXfs 的顺序**必须一一对应**。
  * 0 默认 / 1 大标题 / 2 表头 / 3 正文居中 / 4 正文左对齐 / 5 说明段落（左上）
- * 6 粗体 / 7 右对齐（垂直居中）/ 8 右对齐+底端对齐（用于落款放右下角）/ 9 左对齐+顶端（同 5，语义区分）
+ * 6 粗体 / 7 右对齐（垂直居中）/ 8 右对齐+底端对齐（落款右下角）
+ * 9 左对齐+顶端 / 10 右对齐+右缩进 5 字（签字处留白）
  */
-const XS = { DEFAULT: 0, TITLE: 1, TH: 2, CENTER: 3, LEFT: 4, NOTE: 5, BOLD: 6, RIGHT: 7, RIGHT_BOTTOM: 8, LEFT_TOP: 9 };
+const XS = {
+  DEFAULT: 0, TITLE: 1, TH: 2, CENTER: 3, LEFT: 4, NOTE: 5,
+  BOLD: 6, RIGHT: 7, RIGHT_BOTTOM: 8, LEFT_TOP: 9, RIGHT_SIGN: 10,
+};
 
 /** styles.xml：字体/填充/边框/单元格格式四张表，供上面 XS 索引导用 */
 const XLSX_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
@@ -1282,7 +1286,7 @@ const XLSX_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sty
   + `<border><left style="thin"><color indexed="64"/></left><right style="thin"><color indexed="64"/></right>`
   + `<top style="thin"><color indexed="64"/></top><bottom style="thin"><color indexed="64"/></bottom><diagonal/></border></borders>`
   + `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>`
-  + `<cellXfs count="10">`
+  + `<cellXfs count="11">`
   + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>`                                                                                            // 0 默认
   + `<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>`   // 1 标题
   + `<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>`  // 2 表头
@@ -1293,6 +1297,7 @@ const XLSX_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sty
   + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" vertical="center"/></xf>`                                // 7 右对齐
   + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" vertical="bottom" wrapText="1"/></xf>`                   // 8 右对齐+底端（落款右下角）
   + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="top" wrapText="1"/></xf>`                       // 9 左对齐+顶端
+  + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" vertical="center" indent="5" wrapText="1"/></xf>`        // 10 右对齐+右缩进5字（签字留白）
   + `</cellXfs>`
   // cellStyles 必须显式声明「常规」样式，否则 Excel/openpyxl 会报 "no default style"
   // （dxfs 也一并声明，部分阅读器要求其存在）
@@ -1497,7 +1502,7 @@ function sheetNotice(rows, meta) {
   out.push({
     h: 32, cells: [
       { v: "签发单位负责人：", s: XS.LEFT }, null, null, null, null, null, null,
-      { v: "接收单位负责人：", s: XS.RIGHT }, null, null, null, null, null, null,
+      { v: "接收单位负责人：", s: XS.RIGHT_SIGN }, null, null, null, null, null, null,
     ],
   });
   return {
@@ -1555,7 +1560,7 @@ function sheetClosure(rows, meta) {
   out.push({
     h: 32, cells: [
       { v: "整改单位负责人：", s: XS.LEFT }, null, null, null, null, null, null,
-      { v: "主管部门负责人：", s: XS.RIGHT }, null, null, null, null, null,
+      { v: "主管部门负责人：", s: XS.RIGHT_SIGN }, null, null, null, null, null,
     ],
   });
   out.push({ h: 20, cells: [{ v: "", s: XS.NOTE }] });
