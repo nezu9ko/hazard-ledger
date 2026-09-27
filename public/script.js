@@ -722,12 +722,11 @@ function renderLogin() {
       <div class="login-logo"><img src="/logo.jpg" alt=""></div>
       <div class="login-title">隐患治理台账系统</div>
       <div class="login-sub">${esc(APP.companyName) || "用户登录"}</div>
-      <form id="loginForm" style="display:flex;flex-direction:column;gap:16px">
-        <div class="field"><label>账号</label><input class="input" id="loginUser" placeholder="请输入账号" autocomplete="username" value="admin"></div>
-        <div class="field"><label>密码</label><input class="input" id="loginPwd" type="password" placeholder="请输入密码" autocomplete="current-password" value="123456"></div>
+      <form id="loginForm" autocomplete="off" style="display:flex;flex-direction:column;gap:16px">
+        <div class="field"><label>账号</label><input class="input" id="loginUser" placeholder="请输入账号" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+        <div class="field"><label>密码</label><input class="input" id="loginPwd" type="password" placeholder="请输入密码" autocomplete="new-password"></div>
         <div class="err-text" id="loginErr" style="display:none"></div>
         <button class="btn btn-primary btn-block" type="submit" id="loginBtn" style="height:40px">登 录</button>
-        <div style="font-size:12px;color:#9ca3af;text-align:center">默认账号 admin / 123456</div>
       </form>
     </div>
   </div>`;
