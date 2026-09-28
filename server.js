@@ -2308,10 +2308,14 @@ const server = http.createServer(async (req, res) => {
 
       // 「可选整改责任人」下拉数据：任意登录用户可用（录入人员也需要选责任人）。
       // 只回 id / 姓名 / 角色，不含任何凭据信息。
-      // 说明：系统管理员（admin 角色）是管理岗，不作为整改责任人出现在列表里。
+      // 可见性规则（2026-09-28 用户明确）：**admin 只有 admin 本人看得见**——
+      //   请求者是管理员的 → 列表里带上 admin（他自己要能被选）；
+      //   请求者是普通用户的 → 把 admin 过滤掉（普通员工选人时不该看到管理账号）。
       if (p === "/api/user-options") {
+        const includeAdmin = sessionUser && sessionUser.role === "admin";
         const r = await pool.query(
-          "SELECT id, user_name, role, department FROM users WHERE role <> 'admin' "
+          "SELECT id, user_name, role, department FROM users "
+          + (includeAdmin ? "" : "WHERE role <> 'admin' ")
           + "ORDER BY COALESCE(department, '\uffff'), user_name"
         );
         return sendJson(res, {
