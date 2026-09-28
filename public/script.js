@@ -192,35 +192,221 @@ function photoUploaderHtml(key, label, hint) {
   </div>`;
 }
 
-/**
- * 按部门分组生成下拉选项 —— **一级菜单=部门，二级菜单=人名**。
- * 采用浏览器原生的 <optgroup>：部门作为分组标题（不可选），展开后选具体人名。
- * @param {Array} items       /api/user-options 返回的 items
- * @param {Object} opt
- *   opt.valueKey  "id" | "name"   选项的 value 用用户ID还是姓名（默认 id）
- *   opt.excludeId 排除某个用户ID（如整改责任人不能同时当复查人）
- *   opt.excludeName 排除某个姓名
+/* ---------- 「部门 → 人名」二级联动选择器（userPicker） ----------
+ * 交互（按要求）：点输入框 → 弹出**部门**列表 → 点某个部门 →
+ * **右侧**展开该部门的人员 → 点人名即选中。
+ *
+ * 为什么不用原生 <select> + <optgroup>：
+ *   原生只能把部门做成"分组标题"平铺在同一个列表里，
+ *   做不出「左部门 / 右人名」两栏、点部门才在右侧展开的联动效果。
+ *
+ * DOM 结构（由 pickerHtml 生成）：
+ *   .picker
+ *     input[type=hidden][id=xxx][data-name]   ← 存所选值，保持各处 el.value 读取不变
+ *     button.picker-btn > span.picker-text + span.picker-arrow
+ *     .picker-panel > .picker-depts（左） + .picker-users（右）
  */
-function deptGroupedOptions(items, opt = {}) {
-  const { valueKey = "id", excludeId = "", excludeName = "" } = opt;
+
+/** 生成选择器外壳；id 与原来的 <select> 相同，读取处无需改 value 的取法 */
+function pickerHtml(id, placeholder) {
+  return `<div class="picker">
+    <input type="hidden" id="${id}" data-name="">
+    <button type="button" class="picker-btn" aria-haspopup="listbox" aria-expanded="false">
+      <span class="picker-text is-placeholder">${esc(placeholder)}</span>
+      <span class="picker-arrow">${icon("chevronDown", 15)}</span>
+    </button>
+    <div class="picker-panel" hidden></div>
+  </div>`;
+}
+
+/** 各选择器的运行时状态（避免堆在 DOM 上，也方便重复 fill 时拿到旧值） */
+const PICKER_STATE = new WeakMap();
+/** 全局只需挂一次「点外面关闭」的监听 */
+let pickerOutsideBound = false;
+
+/** 传 id 时既接受 "rectifyUser" 也接受 "#rectifyUser"（统一在这里归一，调用处不用纠结） */
+const pickerEl = (input) => (typeof input === "string" ? $("#" + input.replace(/^#/, "")) : input);
+
+/** 取选择器当前所选的人名（统一入口，避免各处再摸 dataset） */
+function pickerName(input) {
+  const el = pickerEl(input);
+  return el ? el.dataset.name || "" : "";
+}
+
+/** 设置选择器的值（同时刷新按钮上的文字），传空值则回到"未选择"态 */
+function setPickerValue(input, value, name) {
+  const el = pickerEl(input);
+  if (!el) return;
+  const wrap = el.closest(".picker");
+  if (!wrap) return;
+  const st = PICKER_STATE.get(el) || {};
+  el.value = value || "";
+  el.dataset.name = name || "";
+  const text = $(".picker-text", wrap);
+  if (text) {
+    const show = name || "";
+    text.textContent = show || st.placeholder || "请选择";
+    text.classList.toggle("is-placeholder", !show);
+  }
+  // 已选中的那项高亮
+  wrap.querySelectorAll(".picker-user").forEach((b) => {
+    b.classList.toggle("is-picked", !!el.value && b.dataset.v === el.value);
+  });
+}
+
+/** 关闭选择器面板 */
+function closePicker(wrap) {
+  if (!wrap) return;
+  const panel = $(".picker-panel", wrap);
+  const btn = $(".picker-btn", wrap);
+  if (panel) panel.hidden = true;
+  if (btn) { btn.classList.remove("is-open"); btn.setAttribute("aria-expanded", "false"); }
+}
+
+/** 打开选择器面板（默认展开"当前所选"所在的部门，方便改选） */
+function openPicker(wrap) {
+  const panel = $(".picker-panel", wrap);
+  const btn = $(".picker-btn", wrap);
+  if (!panel) return;
+  // 先把别的面板关掉，避免叠开
+  document.querySelectorAll(".picker").forEach((w) => { if (w !== wrap) closePicker(w); });
+  panel.hidden = false;
+  if (btn) { btn.classList.add("is-open"); btn.setAttribute("aria-expanded", "true"); }
+  const el = $("input[type=hidden]", wrap);
+  const st = PICKER_STATE.get(el);
+  if (st && st.valueToDept && el && el.value && !st.activeDept) {
+    const d = st.valueToDept[el.value];
+    if (d) { st.activeDept = d; st.renderDepts(); st.renderUsers(); }
+  }
+}
+
+/**
+ * 往某个选择器里填人员数据。
+ * @param {HTMLElement|string} input  隐藏 input 元素或它的 id
+ * @param {Array} items               /api/user-options 的 items
+ * @param {Object} opt
+ *   opt.valueKey   "id" | "name"      所选值用用户ID还是姓名（默认 id）
+ *   opt.excludeName 排除某个姓名（如整改责任人不能同时当复查人）
+ *   opt.placeholder 未选择时的提示文字
+ *   opt.value      预选值（配合 opt.name 一起给）
+ *   opt.name       预选人名
+ *   opt.current    额外补进来的一个人（如"当前登录人"），列表中已有则忽略
+ *   opt.currentDept 补进来那个人的分组名（默认"当前指定"）
+ */
+function fillUserPicker(input, items, opt = {}) {
+  const el = pickerEl(input);
+  if (!el) return null;
+  const wrap = el.closest(".picker");
+  if (!wrap) return null;
+  const btn = $(".picker-btn", wrap);
+  const panel = $(".picker-panel", wrap);
+  const valueKey = opt.valueKey || "id";
+  const placeholder = opt.placeholder || "请选择";
+
+  // ---- 组数据：按部门分桶，并补入"当前指定/本人"这类不在列表里的人 ----
+  const list = (items || []).slice();
+  if (opt.current && opt.current.userName && !list.some((u) => u.userName === opt.current.userName)) {
+    // 补进来的人自己带了部门就用它；没有则用 currentDept，再兜底"当前指定"
+    const dept = opt.current.department || opt.currentDept || "当前指定";
+    list.unshift(Object.assign({}, opt.current, { department: dept }));
+  }
   const byDept = {};
-  for (const u of items || []) {
-    if (excludeId && u.id === excludeId) continue;
-    if (excludeName && u.userName === excludeName) continue;
+  for (const u of list) {
+    if (opt.excludeName && u.userName === opt.excludeName) continue;
     const d = u.department || "未分配部门";
     (byDept[d] = byDept[d] || []).push(u);
   }
-  // 部门先后：先按固定顺序，其余（未在列表里的）排后面
+  Object.keys(byDept).forEach((d) => byDept[d].sort((a, b) => a.userName.localeCompare(b.userName, "zh")));
+  // 部门先后：先按固定顺序，其余（"当前指定""未分配部门"等）排后面
   const order = [
     ...DEPARTMENTS.filter((d) => byDept[d]),
     ...Object.keys(byDept).filter((d) => !DEPARTMENTS.includes(d)),
   ];
-  return order.map((d) => `<optgroup label="${esc(d)}">`
-    + byDept[d].sort((a, b) => a.userName.localeCompare(b.userName, "zh"))
-      .map((u) => `<option value="${esc(valueKey === "name" ? u.userName : u.id)}"`
-        + ` data-name="${esc(u.userName)}" data-dept="${esc(u.department || "")}">${esc(u.userName)}</option>`).join("")
-    + "</optgroup>").join("");
+  const valOf = (u) => String(valueKey === "name" ? u.userName : u.id);
+  const valueToDept = {};
+  order.forEach((d) => byDept[d].forEach((u) => { valueToDept[valOf(u)] = d; }));
+
+  const st = { byDept, order, valOf, valueToDept, placeholder, activeDept: "", valueKey };
+  PICKER_STATE.set(el, st);
+
+  // ---- 渲染 ----
+  st.renderDepts = () => {
+    const box = $(".picker-depts", panel);
+    if (!box) return;
+    box.innerHTML = order.length
+      ? order.map((d) => `<button type="button" role="tab" class="picker-dept${d === st.activeDept ? " is-active" : ""}"`
+        + ` data-dept="${esc(d)}">${esc(d)}<span class="n">${byDept[d].length}</span></button>`).join("")
+      : `<div class="picker-empty">暂无可选人员</div>`;
+  };
+  st.renderUsers = () => {
+    const box = $(".picker-users", panel);
+    if (!box) return;
+    if (!st.activeDept) { box.innerHTML = `<div class="picker-hint">${icon("chevronLeft", 13)} 点左侧部门查看人员</div>`; return; }
+    const arr = byDept[st.activeDept] || [];
+    box.innerHTML = arr.length
+      ? arr.map((u) => `<button type="button" role="option" class="picker-user${valOf(u) === el.value ? " is-picked" : ""}"`
+        + ` data-v="${esc(valOf(u))}" data-name="${esc(u.userName)}">${esc(u.userName)}</button>`).join("")
+      : `<div class="picker-empty">该部门暂无可选人员</div>`;
+  };
+  panel.innerHTML = `<div class="picker-depts"></div><div class="picker-users"></div>`;
+  st.renderDepts();
+  st.renderUsers();
+
+  // ---- 事件（容器上绑一次，内部重新渲染也不会丢） ----
+  // ⚠️ 注意：这里**不能闭包捕获本次的 st**。fillUserPicker 会被反复调用
+  //（例如选了整改责任人后要重建复查人列表），每次都是新的 st；
+  // 若闭包住旧 st，之后点部门就会拿旧数据渲染，出现"排除不生效"这类怪问题。
+  // 所以一律用 PICKER_STATE.get(el) 现取。
+  const curSt = () => PICKER_STATE.get(el);
+  if (panel.dataset.bound !== "1") {
+    panel.dataset.bound = "1";
+    panel.addEventListener("click", (e) => {
+      // 必须拦住冒泡：下面点部门会重渲染列表，把 e.target 从 DOM 上摘掉，
+      // 于是全局"点外面关闭"里 w.contains(e.target) 会变 false，把面板误关掉。
+      e.stopPropagation();
+      const s2 = curSt();
+      if (!s2) return;
+      const d = e.target.closest(".picker-dept");
+      if (d) { s2.activeDept = d.dataset.dept; s2.renderDepts(); s2.renderUsers(); return; }
+      const u = e.target.closest(".picker-user");
+      if (u) {
+        setPickerValue(el, u.dataset.v, u.dataset.name);
+        closePicker(wrap);
+        if (btn) btn.focus();
+        el.dispatchEvent(new Event("change", { bubbles: true }));   // 兼容原来 onchange 的写法
+      }
+    });
+  }
+  if (btn && btn.dataset.bound !== "1") {
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (panel.hidden) openPicker(wrap); else closePicker(wrap);
+    });
+  }
+  if (!pickerOutsideBound) {
+    pickerOutsideBound = true;
+    document.addEventListener("click", (e) => {
+      document.querySelectorAll(".picker").forEach((w) => {
+        if (!w.contains(e.target)) closePicker(w);
+      });
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") document.querySelectorAll(".picker").forEach((w) => closePicker(w));
+    });
+  }
+
+  // ---- 预选 ----
+  const preset = opt.value !== undefined ? opt.value : el.value;
+  if (preset) {
+    const presetName = opt.name !== undefined ? opt.name : (el.dataset.name || "");
+    setPickerValue(el, preset, presetName || (byDept[valueToDept[preset]] || []).find((u) => valOf(u) === preset)?.userName || "");
+  } else {
+    setPickerValue(el, "", "");     // 清成"未选择"态
+  }
+  return { value: el.value, name: el.dataset.name, state: st };
 }
+
 
 // 附件上传控件：选择即上传，返回 state（含 payload() 供提交）
 function initPhotoUploader(key) {
@@ -1443,7 +1629,7 @@ function renderHazardNew() {
         <div class="section-title">基本信息</div>
         <div class="form-grid">
           <div class="field"><label>排查日期 <span class="req">*</span></label><input class="input" type="date" id="inspectDate" value="${todayStr()}"></div>
-          <div class="field"><label>排查人员 <span class="req">*</span></label><input class="input" id="inspector" placeholder="请输入排查人员姓名"></div>
+          <div class="field"><label>排查人员 <span class="req">*</span></label>${pickerHtml("inspector", "请选择排查人员")}</div>
           <div class="field span-2"><label>隐患所在部位 <span class="req">*</span></label><input class="input" id="location" placeholder="如：主井口提升机、井下变电室"></div>
         </div>
         <div class="section-title" style="margin-top:26px">隐患信息</div>
@@ -1456,9 +1642,9 @@ function renderHazardNew() {
         <div class="section-title" style="margin-top:26px">责任分工</div>
         <div class="form-grid">
           <div class="field"><label>整改责任人 <span class="req">*</span></label>
-            <select class="select" id="rectifyUser"><option value="">请选择整改责任人</option></select></div>
+            ${pickerHtml("rectifyUser", "请选择整改责任人")}</div>
           <div class="field"><label>复查人员 <span class="req">*</span></label>
-            <select class="select" id="reviewUser"><option value="">请选择复查人员</option></select></div>
+            ${pickerHtml("reviewUser", "请选择复查人员")}</div>
           <div class="field"><label>计划完成时限 <span class="req">*</span></label><input class="input" type="date" id="planDeadline"></div>
         </div>
         <div class="callout-info" style="margin-top:12px">
@@ -1479,23 +1665,46 @@ function renderHazardNew() {
   $("#backBtn").onclick = () => history.back();
   const hazardPhotos = initPhotoUploader("hazardPhotos");
 
-  // 整改责任人 / 复查人员：从系统用户里选，**按部门分组**（一级部门、二级人名）
+  // 排查人员 / 整改责任人 / 复查人员：都从系统用户里选，**部门 → 人名 二级联动**
   void (async () => {
     try {
       const r = await api.get("/user-options");
       const items = r.items || [];
-      $("#rectifyUser").innerHTML = `<option value="">请选择整改责任人</option>${deptGroupedOptions(items)}`;
-      // 复查人下拉里排除当前已选的整改责任人（两者不能是同一人）
+      const me = currentUser();
+      // 排查人员默认 = 当前登录人。值用**姓名**（后端 inspector 是文本字段）。
+      // 注意 /api/user-options 刻意**不含 admin**（admin 不作为整改责任人），
+      // 但排查人员可能就是 admin 本人，所以用 opt.current 把"我"补进去。
+      fillUserPicker("#inspector", items, {
+        valueKey: "name",
+        placeholder: "请选择排查人员",
+        current: me ? { id: me.id, userName: me.userName, department: me.department } : null,
+        currentDept: "当前指定",
+        value: me ? me.userName : "",
+        name: me ? me.userName : "",
+      });
+      // 整改责任人：不能选 admin（列表里本来就没有）
+      fillUserPicker("#rectifyUser", items, { placeholder: "请选择整改责任人" });
+      // 复查人员：排除当前已选的整改责任人（两者不能是同一人）
       const refreshReview = () => {
-        const ex = $("#rectifyUser").selectedOptions[0]?.dataset?.name || "";
-        const keep = $("#reviewUser").value;
-        $("#reviewUser").innerHTML = `<option value="">请选择复查人员</option>`
-          + deptGroupedOptions(items, { excludeName: ex });
-        if (keep && $("#reviewUser").querySelector(`option[value="${CSS.escape(keep)}"]`)) $("#reviewUser").value = keep;
+        const ex = pickerName("#rectifyUser");
+        const keepV = $("#reviewUser").value;
+        const keepN = $("#reviewUser").dataset.name || "";
+        fillUserPicker("#reviewUser", items, {
+          placeholder: "请选择复查人员",
+          excludeName: ex,
+          value: keepN && keepN !== ex ? keepV : "",
+          name: keepN && keepN !== ex ? keepN : "",
+        });
       };
       refreshReview();
-      $("#rectifyUser").onchange = refreshReview;
-    } catch { /* 拿不到用户列表时保持空，提交时会提示 */ }
+      $("#rectifyUser").addEventListener("change", refreshReview);
+    } catch (err) {
+      // 不要静默吞掉：拿不到用户列表时页面会"看起来正常但选不了人"，很难查
+      console.error("[userPicker] 加载可选人员失败:", err);
+      ["#inspector", "#rectifyUser", "#reviewUser"].forEach((s) => {
+        const el = $(s); if (el && el.closest(".picker")) fillUserPicker(el, [], { placeholder: "人员列表加载失败，请刷新重试" });
+      });
+    }
   })();
 
   $("#hazardForm").onsubmit = async (e) => {
@@ -1508,8 +1717,8 @@ function renderHazardNew() {
       location: get("location").trim(), description: get("description").trim(),
       category: get("category"), level: get("level"),
       // 责任人 / 复查人：同时送用户ID（绑定账号）与姓名（打印、导出用）
-      rectifyUserId: rSel.value, rectifyPerson: rSel.selectedOptions[0]?.dataset?.name || "",
-      reviewerUserId: vSel.value, reviewer: vSel.selectedOptions[0]?.dataset?.name || "",
+      rectifyUserId: rSel.value, rectifyPerson: pickerName(rSel),
+      reviewerUserId: vSel.value, reviewer: pickerName(vSel),
       planDeadline: get("planDeadline"),
       hazardPhotos: hazardPhotos.payload(),
     };
@@ -1571,8 +1780,8 @@ async function renderHazardDetail(id) {
         <div class="field"><label>复查日期 <span class="req">*</span></label><input class="input" type="date" id="reviewDate" value="${todayStr()}"></div>
       </div>
       <div class="form-grid" style="margin-top:16px">
-        <div class="field span-2"><label>复查人员 <span class="req">*</span></label>
-          <select class="select" id="reviewer"><option value="">请选择复查人员</option></select>
+          <div class="field span-2"><label>复查人员 <span class="req">*</span></label>
+            ${pickerHtml("reviewer", "请选择复查人员")}</div>
           <div style="font-size:12px;color:#9ca3af;margin-top:4px">默认取登记时指定的复查人；只有该人（或管理员）能提交复查</div></div>
         <div class="field span-2"><label>复查结果 <span class="req">*</span></label><textarea class="textarea" id="reviewResult" placeholder="请输入复查结果描述"></textarea></div>
       </div>
@@ -1696,24 +1905,31 @@ async function renderHazardDetail(id) {
   const rf = $("#reviewForm");
   if (rf) {
     // 复查人 = 登记时指定的那位（只有本人能提交，见后端权限判断）。
-    // 下拉按部门分组列出全部用户，方便管理员应急代办时改选。
+    // 选择器按部门分组列出全部用户，方便管理员应急代办时改选；值用**姓名**。
     void (async () => {
-      const sel = $("#reviewer");
-      if (!sel) return;
+      if (!$("#reviewer")) return;
       const def = String(h.reviewer || "").trim();
+      const me = currentUser();
+      const pick = def || (me ? me.userName : "");
       try {
         const r = await api.get("/user-options");
-        const items = r.items || [];
-        const hasDef = items.some((u) => u.userName === def);
-        sel.innerHTML = `<option value="">请选择复查人员</option>`
-          + (def && !hasDef ? `<optgroup label="当前指定"><option value="${esc(def)}">${esc(def)}</option></optgroup>` : "")
-          + deptGroupedOptions(items, { valueKey: "name" });
+        // def 可能是个已不在用户表里的人（改名/删号），用 current 兜底补进去
+        fillUserPicker("#reviewer", r.items || [], {
+          valueKey: "name",
+          placeholder: "请选择复查人员",
+          current: pick ? { id: "", userName: pick, department: "" } : null,
+          currentDept: "当前指定",
+          value: pick,
+          name: pick,
+        });
       } catch {
-        sel.innerHTML = `<option value="">请选择复查人员</option>`
-          + (def ? `<option value="${esc(def)}">${esc(def)}</option>` : "");
+        fillUserPicker("#reviewer", [], {
+          valueKey: "name", placeholder: "请选择复查人员",
+          current: pick ? { id: "", userName: pick, department: "" } : null,
+          currentDept: "当前指定",
+          value: pick, name: pick,
+        });
       }
-      if (def) sel.value = def;                        // 默认 = 登记时指定的复查人
-      else if (currentUser()?.userName) sel.value = currentUser().userName;
     })();
 
     rf.onsubmit = async (e) => {
