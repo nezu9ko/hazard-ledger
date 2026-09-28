@@ -44,28 +44,34 @@ const fetch = git(["fetch", "origin", "main"]);
 const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).out || "main";
 
 if (!fetch.ok) {
-  say("  [注意] 现在连不上 GitHub（github.com:443 时通时断），无法与远端比对。");
-  say("         下面是最近 10 次本地提交，供参考。");
-  say();
-  const log = git(["log", "--oneline", "-10"]);
-  log.out.split("\n").filter(Boolean).forEach((l) => say("    " + l));
-  say();
-  say("  → 想比对远端：先打开代理，再重跑一次本检查。");
+  say("  [注意] 现在连不上 GitHub（github.com:443 时通时断），下列清单基于");
+  say("         **上次成功拉取时**记录的远端位置，可能略旧。开代理后重跑即为最新。");
 } else {
-  const ahead = git(["log", "--oneline", "origin/main..HEAD"]);
-  if (ahead.out) {
-    const n = ahead.out.split("\n").filter(Boolean).length;
-    say(`  尚未推送的提交（共 ${n} 个）：`);
-    say();
-    ahead.out.split("\n").filter(Boolean).forEach((l) => say("    " + l));
-  } else {
-    say("  尚未推送的提交：无 —— 本地提交都已推送。");
-  }
-  const behind = git(["rev-list", "--count", "HEAD..origin/main"]);
-  if (behind.ok && Number(behind.out) > 0) {
-    say();
-    say(`  ⚠️ 远端还有 ${behind.out} 个提交本地没有，推送前先 git pull --rebase。`);
-  }
+  say("  远端位置已刷新为最新。");
+}
+
+// 关键：`origin/main..HEAD` 用的是**本地记录的远端引用**，断网也能算，
+// 所以不要因为 fetch 失败就放弃比对 —— 那会让用户看不到自己有哪些提交没推。
+const ahead = git(["log", "--oneline", "origin/main..HEAD"]);
+if (!ahead.ok) {
+  say("  ⚠️ 无法读取远端引用 origin/main，下面列出最近 10 次本地提交供参考：");
+  say();
+  git(["log", "--oneline", "-10"]).out.split("\n").filter(Boolean).forEach((l) => say("    " + l));
+} else if (ahead.out) {
+  const n = ahead.out.split("\n").filter(Boolean).length;
+  say();
+  say(`  尚未推送的提交（共 ${n} 个）：`);
+  say();
+  ahead.out.split("\n").filter(Boolean).forEach((l) => say("    " + l));
+} else {
+  say();
+  say("  尚未推送的提交：无 —— 本地提交都已推送。");
+}
+
+const behind = git(["rev-list", "--count", "HEAD..origin/main"]);
+if (behind.ok && Number(behind.out) > 0) {
+  say();
+  say(`  ⚠️ 远端还有 ${behind.out} 个提交本地没有，推送前先 git pull --rebase。`);
 }
 
 say();
