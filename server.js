@@ -98,9 +98,11 @@ const STATUSES = ["pending", "rectifying", "closed"];                           
 // 登记、整改、复查都不再按角色授权，而是**按人**：整改填本人、复查由指定复查人。
 const ROLES = ["user", "admin"];
 
-/** 部门列表（一级菜单）；责任人下拉按此分组，人名作为二级 */
+/** 部门列表（一级菜单）；责任人下拉按此分组，人名作为二级
+ *  ★ 这里列出的部门会**全部**出现在下拉框里（哪怕该部门暂时没人），
+ *    与前端 public/script.js 的 DEPARTMENTS 必须**逐字一致**。 */
 const DEPARTMENTS = [
-  "地测部", "安全部", "通风部", "环保部", "机电部", "生产技术部",
+  "领导班子", "地测部", "安全部", "通风部", "环保部", "机电部", "生产技术部",
   "采矿车间", "基建部", "选矿厂", "财务部", "综合管理部",
 ];
 
@@ -315,7 +317,17 @@ function buildHazardWhere(q, today) {
   const category = q.get("category");
   if (category) add("category = ?", category);
 
+  // 「部门/单位」筛选：依据是**整改责任人所属部门**。
+  // 用子查询而不是 JOIN —— 列表 / 计数 / 导出共用同一个 where 片段，
+  // 子查询不需要给表起别名，四处调用点都不用改。
+  const department = (q.get("department") || "").trim();
+  if (department) {
+    add("rectify_user_id IN (SELECT id FROM users WHERE department = ?)", department);
+  }
+
   const status = q.get("status");
+  // 列表筛选对外只有三种口径（见前端 STATUS_FILTER_LABELS）：
+  //   已验收 = closed ／ 未验收 = 非 closed ／ 逾期 = 非 closed 且过了计划时限
   if (status === "unclosed") conds.push("status <> 'closed'");
   else if (status === "overdue") add("(status <> 'closed' AND plan_deadline < ?)", today);
   else if (status) add("status = ?", status);
@@ -507,7 +519,7 @@ const SCHEMA_COMMENTS = [
   ["COLUMN", "hazard", "inspector", "排查人"],
   ["COLUMN", "hazard", "location", "隐患部位 / 地点"],
   ["COLUMN", "hazard", "description", "隐患描述"],
-  ["COLUMN", "hazard", "category", "隐患类别：equipment设备设施 / operation作业行为 / fire消防安全 / electrical电气安全 / environment环境安全 / management安全管理"],
+  ["COLUMN", "hazard", "category", "隐患类别：equipment设备设施 / operation违章行为 / fire消防安全 / electrical电气安全 / environment环境安全 / management安全管理"],
   ["COLUMN", "hazard", "level", "隐患等级：major重大 / general一般"],
   ["COLUMN", "hazard", "rectify_measure", "整改措施（登记时不填，由整改责任人「开始整改」时填写）"],
   ["COLUMN", "hazard", "rectify_person", "整改责任人姓名（登记时从系统用户中选择，冗余存姓名便于打印/导出）"],
@@ -1533,7 +1545,7 @@ function buildXlsx(sheets) {
 
 /* ---------------- 导出（xlsx / csv） ---------------- */
 const LEVEL_LABELS = { major: "重大", general: "一般" };
-const CATEGORY_LABELS = { equipment: "设备设施", operation: "作业行为", fire: "消防安全", electrical: "电气安全", environment: "环境安全", management: "管理缺陷" };
+const CATEGORY_LABELS = { equipment: "设备设施", operation: "违章行为", fire: "消防安全", electrical: "电气安全", environment: "环境安全", management: "管理缺陷" };
 const STATUS_LABELS = { pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
 
 /* ---------------- 三套中式表单导出 ----------------
@@ -1543,7 +1555,7 @@ const STATUS_LABELS = { pending: "待整改", rectifying: "整改中", closed: "
  *   ③ ledger  安全隐患整改治理台账    （11 列，含单位行）
  *
  * ⚠️ 口径说明：纸质表单中「**隐患类别**」列填的是「一般」这类**等级**值，
- *    因此这里填系统的 level（重大/一般）；系统内部的 category（设备设施/作业行为…）
+ *    因此这里填系统的 level（重大/一般）；系统内部的 category（设备设施/违章行为…）
  *    不见于纸质表单，属于系统内部管理字段，不出现在导出件里。
  */
 const ORG_NAME = () => String(CFG.companyName || "").trim();

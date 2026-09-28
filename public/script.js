@@ -36,17 +36,21 @@
  * 这些 key 必须与服务端 server.js 里的 LEVELS/CATEGORIES/STATUSES/ROLES 完全一致。
  * 前端的 role-* / lv-* / st-* CSS 类名也是由这些 key 拼出来的。 */
 const CATEGORY_LABELS = {
-  equipment: "设备设施", operation: "作业行为", fire: "消防安全",
+  equipment: "设备设施", operation: "违章行为", fire: "消防安全",
   electrical: "电气安全", environment: "环境安全", management: "管理缺陷",
 };
 const LEVEL_LABELS = { major: "重大", general: "一般" };
 const STATUS_LABELS = { pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
-/* 列表筛选用：额外支持「未闭环」伪状态（= 非已闭环，由后端 matchStatus 处理） */
-const STATUS_FILTER_LABELS = { unclosed: "未闭环", pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
+/* 列表「状态」筛选只有四种口径（不是流程状态，别混）：
+ *   已验收 = closed ／ 未验收 = 非 closed ／ 逾期 = 非 closed 且过了计划时限
+ * value 沿用后端的 closed / unclosed / overdue，改的只是显示文案 */
+const STATUS_FILTER_LABELS = { closed: "已验收", unclosed: "未验收", overdue: "逾期" };
 // 角色只分两类（登记/整改/复查已改为按"人"授权，不再按角色）
 const ROLE_LABELS = { user: "普通用户", admin: "系统管理员" };
 // 部门列表（责任人下拉的一级分组）
-const DEPARTMENTS = ["地测部", "安全部", "通风部", "环保部", "机电部", "生产技术部",
+// 部门列表（与 server.js 的 DEPARTMENTS 必须逐字一致）。
+// ★ 下拉框里**所有部门都会出现**，哪怕该部门暂时没人。
+const DEPARTMENTS = ["领导班子", "地测部", "安全部", "通风部", "环保部", "机电部", "生产技术部",
   "采矿车间", "基建部", "选矿厂", "财务部", "综合管理部"];
 const LEVEL_COLORS = { major: "#dc2626", general: "#ca8a04" };
 
@@ -317,14 +321,16 @@ function fillUserPicker(input, items, opt = {}) {
     (byDept[d] = byDept[d] || []).push(u);
   }
   Object.keys(byDept).forEach((d) => byDept[d].sort((a, b) => a.userName.localeCompare(b.userName, "zh")));
-  // 部门先后：先按固定顺序，其余（"当前指定""未分配部门"等）排后面
+  // ★ 左栏要列出**全部**部门（哪怕该部门暂时没人），后面再接列表外的桶
+  //   （"当前指定""未分配部门"这类临时分组）。
+  //   所以渲染时一律 (byDept[d] || []) 兜底，别直接取 .length。
   const order = [
-    ...DEPARTMENTS.filter((d) => byDept[d]),
+    ...DEPARTMENTS,
     ...Object.keys(byDept).filter((d) => !DEPARTMENTS.includes(d)),
   ];
   const valOf = (u) => String(valueKey === "name" ? u.userName : u.id);
   const valueToDept = {};
-  order.forEach((d) => byDept[d].forEach((u) => { valueToDept[valOf(u)] = d; }));
+  order.forEach((d) => (byDept[d] || []).forEach((u) => { valueToDept[valOf(u)] = d; }));
 
   const st = { byDept, order, valOf, valueToDept, placeholder, activeDept: "", valueKey };
   PICKER_STATE.set(el, st);
@@ -335,7 +341,7 @@ function fillUserPicker(input, items, opt = {}) {
     if (!box) return;
     box.innerHTML = order.length
       ? order.map((d) => `<button type="button" role="tab" class="picker-dept${d === st.activeDept ? " is-active" : ""}"`
-        + ` data-dept="${esc(d)}">${esc(d)}<span class="n">${byDept[d].length}</span></button>`).join("")
+        + ` data-dept="${esc(d)}">${esc(d)}<span class="n">${(byDept[d] || []).length}</span></button>`).join("")
       : `<div class="picker-empty">暂无可选人员</div>`;
   };
   st.renderUsers = () => {
@@ -1070,12 +1076,12 @@ async function renderDashboard() {
 }
 
 /* ---------- 台账列表 ---------- */
-const listState = { page: 1, pageSize: 10, level: "", category: "", status: "", dateFrom: "", dateTo: "", keyword: "" };
+const listState = { page: 1, pageSize: 10, level: "", category: "", status: "", department: "", dateFrom: "", dateTo: "", keyword: "" };
 
 // 从看板等入口跳转台账，并带入指定筛选
 function gotoLedger(statusFilter) {
   Object.assign(listState, {
-    page: 1, level: "", category: "", status: statusFilter || "",
+    page: 1, level: "", category: "", status: statusFilter || "", department: "",
     dateFrom: "", dateTo: "", keyword: "",
   });
   if (location.hash === "#/hazards") router();  // 已在台账页 → 强制重新渲染
@@ -1111,7 +1117,7 @@ async function exportHazards(ids, template = "ledger") {
   const qs = new URLSearchParams({ format: "xlsx" });
   if (template) qs.set("template", template);
   if (ids && ids.length) qs.set("ids", ids.join(","));
-  else ["level", "category", "status", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
+  else ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
   const res = await fetch(`/api/export?${qs.toString()}`, {
     headers: {
       Authorization: `Bearer ${session.token}`,
@@ -1183,6 +1189,7 @@ async function renderHazardList() {
           <div class="field"><label>隐患等级</label><select class="select" id="fLevel"><option value="">全部</option>${Object.entries(LEVEL_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>
           <div class="field"><label>隐患类别</label><select class="select" id="fCategory"><option value="">全部</option>${Object.entries(CATEGORY_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>
           <div class="field"><label>状态</label><select class="select" id="fStatus"><option value="">全部</option>${Object.entries(STATUS_FILTER_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>
+          <div class="field"><label>部门/单位</label><select class="select" id="fDept"><option value="">全部</option>${DEPARTMENTS.map((d) => `<option value="${d}">${d}</option>`).join("")}</select></div>
           <div class="field"><label>关键词</label><input class="input" id="fKeyword" placeholder="搜索编号/描述/部位"></div>
           <div class="field"><label>开始日期</label><input class="input" type="date" id="fFrom"></div>
           <div class="field"><label>结束日期</label><input class="input" type="date" id="fTo"></div>
@@ -1198,7 +1205,8 @@ async function renderHazardList() {
 
   // 回填筛选条件
   $("#fLevel").value = listState.level; $("#fCategory").value = listState.category;
-  $("#fStatus").value = listState.status; $("#fKeyword").value = listState.keyword;
+  $("#fStatus").value = listState.status; $("#fDept").value = listState.department;
+  $("#fKeyword").value = listState.keyword;
   $("#fFrom").value = listState.dateFrom; $("#fTo").value = listState.dateTo;
 
   // 打印：点一下弹出格式菜单（与导出同一套表单版式），按当前筛选条件打印
@@ -1209,13 +1217,14 @@ async function renderHazardList() {
 
   $("#btnQuery").onclick = () => {
     listState.level = $("#fLevel").value; listState.category = $("#fCategory").value;
-    listState.status = $("#fStatus").value; listState.keyword = $("#fKeyword").value.trim();
+    listState.status = $("#fStatus").value; listState.department = $("#fDept").value;
+    listState.keyword = $("#fKeyword").value.trim();
     listState.dateFrom = $("#fFrom").value; listState.dateTo = $("#fTo").value;
     listState.page = 1; loadList();
   };
   $("#btnReset").onclick = () => {
-    Object.assign(listState, { page: 1, level: "", category: "", status: "", dateFrom: "", dateTo: "", keyword: "" });
-    ["fLevel", "fCategory", "fStatus", "fKeyword", "fFrom", "fTo"].forEach((id) => { $("#" + id).value = ""; });
+    Object.assign(listState, { page: 1, level: "", category: "", status: "", department: "", dateFrom: "", dateTo: "", keyword: "" });
+    ["fLevel", "fCategory", "fStatus", "fDept", "fKeyword", "fFrom", "fTo"].forEach((id) => { $("#" + id).value = ""; });
     loadList();
   };
   loadList();
@@ -1226,7 +1235,7 @@ async function loadList() {
   if (!card) return;
   card.innerHTML = `<div class="loading"><div class="spinner"></div>加载中...</div>`;
   const qs = new URLSearchParams({ page: listState.page, pageSize: listState.pageSize });
-  ["level", "category", "status", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
+  ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
 
   let data;
   try { data = await api.get(`/hazards?${qs.toString()}`); }
@@ -1277,7 +1286,11 @@ async function loadList() {
       </div>`;
 
   // 批量选择（仅安全管理员/系统管理员可见复选框）
-  if (canDel) {
+  // ⚠️ 必须判空：列表**无结果**时 card 里只有一句"暂无数据"，
+  //    批量栏整个不存在。原来直接取 #batchClear.onclick 会抛
+  //    "Cannot set properties of null"，而且异常会中断 loadList 后半段，
+  //    导致下面的翻页/每页条数绑不上（表现为"筛出空结果后翻页失灵"）。
+  if (canDel && $("#batchBar", card)) {
     const bar = $("#batchBar", card);
     const picks = () => [...card.querySelectorAll(".row-pick")];
     const selected = () => picks().filter((c) => c.checked).map((c) => ({ id: c.dataset.id, code: c.dataset.code }));
@@ -1427,7 +1440,7 @@ const PRINT_CSS = `
 async function printForm(template) {
   const qs = new URLSearchParams({ format: "json" });
   if (template) qs.set("template", template);
-  ["level", "category", "status", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
+  ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
   const res = await fetch(`/api/export?${qs.toString()}`, {
     headers: {
       Authorization: `Bearer ${session.token}`,
@@ -1505,7 +1518,7 @@ async function fetchAllFiltered() {
   let all = [];
   for (;;) {
     const qs = new URLSearchParams({ page, pageSize });
-    ["level", "category", "status", "dateFrom", "dateTo", "keyword"].forEach((k) => {
+    ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword"].forEach((k) => {
       if (listState[k]) qs.set(k, listState[k]);
     });
     const data = await api.get(`/hazards?${qs.toString()}`);
@@ -1521,7 +1534,10 @@ function filterSummaryText() {
   const parts = [];
   if (listState.level) parts.push(`等级：${LEVEL_LABELS[listState.level]}`);
   if (listState.category) parts.push(`类别：${CATEGORY_LABELS[listState.category]}`);
-  if (listState.status) parts.push(`状态：${STATUS_LABELS[listState.status]}`);
+  // 注意用 STATUS_FILTER_LABELS：筛选口径是 已验收/未验收/逾期，
+  // 用 STATUS_LABELS 取 unclosed 会得到 undefined
+  if (listState.status) parts.push(`状态：${STATUS_FILTER_LABELS[listState.status] || listState.status}`);
+  if (listState.department) parts.push(`部门/单位：${listState.department}`);
   if (listState.dateFrom) parts.push(`排查日期 ≥ ${listState.dateFrom}`);
   if (listState.dateTo) parts.push(`排查日期 ≤ ${listState.dateTo}`);
   if (listState.keyword) parts.push(`关键词：${listState.keyword}`);
