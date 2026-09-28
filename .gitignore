@@ -8,3 +8,6 @@ backup/
 uploads/
 logs/
 output-export/
+
+# 本机专用的「待推送」记录（随 git 状态变化，不入库）
+待推送记录.md

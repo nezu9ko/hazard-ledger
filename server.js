@@ -584,7 +584,8 @@ async function applySchemaComments() {
  *   ② 切换到目标库建表（IF NOT EXISTS）+ 补列（ALTER ... ADD COLUMN IF NOT EXISTS，
  *      用于兼容早期版本已存在的库）；
  *   ③ 同步表 / 字段的中文注释（见上方 SCHEMA_COMMENTS）；
- *   ④ 若 users 表为空则播种默认管理员 admin / 123456。
+ *   ④ 若 users 表为空则播种初始管理员 admin（初始口令见 DEFAULT_INITIAL_PASSWORD，
+ *      刻意不在控制台/日志里打印，见下方 console.log 处的说明）。
  */
 async function initDatabase() {
   // 1) 自动建库（连到 postgres 维护库）
@@ -699,7 +700,8 @@ async function initDatabase() {
         "INSERT INTO users (id,user_id,user_name,role,salt,password_hash,must_change_password) VALUES ($1,$2,$3,$4,$5,$6,$7)",
         [genId(), "u_admin", "admin", "admin", ph.salt, ph.hash, false]
       );
-      console.log("[DB] 已创建默认管理员 admin / 123456");
+      // 这里**故意不打印口令**：控制台/日志文件会被无关人员看到，口令请查《维护手册》。
+      console.log("[DB] 已创建初始管理员账号 admin（初始口令见《维护手册》，首次登录后请立即修改）");
     }
 }
 
@@ -806,7 +808,7 @@ async function handleAuth(req, res, url) {
 /**
  * 用户管理（仅系统管理员 admin 可访问，见 requiredRoles）。
  *   GET    /api/users        列表
- *   POST   /api/users        新增（初始密码 123456，首次登录强制修改；姓名唯一）
+ *   POST   /api/users        新增（初始口令见 DEFAULT_INITIAL_PASSWORD，首次登录强制修改；姓名唯一）
  *   DELETE /api/users/:id    删除
  *   PATCH  /api/users/:id    改角色；`{action:"reset-password"}` 重置为初始密码
  * 注意：DEFAULT_INITIAL_PASSWORD 为全局初始密码，重置后 must_change_password=true。
@@ -2398,7 +2400,7 @@ async function initDatabaseWithRetry(attempts = 6, delayMs = 5000) {
     console.log(`  本机访问:   http://localhost:${CFG.port}`);
     ips.forEach((ip) => console.log(`  局域网访问: http://${ip}:${CFG.port}`));
     console.log(`  数据库:     PostgreSQL ${CFG.db.user}@${CFG.db.host}:${CFG.db.port}/${CFG.db.database}`);
-    console.log(`  默认账号:   admin / 123456`);
+    // 启动横幅**不打印账号口令** —— 该窗口和 server-out.log 都可能被无关人员看到
     console.log("  按 Ctrl+C 停止服务");
     console.log("======================================================");
   });
