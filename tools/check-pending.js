@@ -88,9 +88,23 @@ if (!st.ok) {
 }
 
 say();
-say("  推送命令（先把代理打开，再执行）：");
+// 按实际远程地址给出「能用」的推送命令，不要写死一种：
+//   SSH  （git@github.com:...）      → 直接 push，不用管代理（走 ssh.github.com:443 隧道）
+//   HTTPS（https://github.com/...）→ 需显式禁用那个已失效的全局代理，否则必失败
+const remoteUrl = git(["remote", "get-url", "origin"]).out || "";
+const isSSH = /^git@|^ssh:\/\//.test(remoteUrl);
+say("  推送命令：");
 say();
-say(`    "${GIT}" -c http.https://github.com.proxy= -c http.proxy= push origin ${branch}`);
+if (isSSH) {
+  say(`    "${GIT}" push origin ${branch}`);
+  say();
+  say("  （当前远程走 SSH over 443 隧道，不用开代理）");
+} else {
+  say(`    "${GIT}" -c http.https://github.com.proxy= -c http.proxy= push origin ${branch}`);
+  say();
+  say("  ⚠️ 当前远程是 HTTPS。github.com:443 时通时断，推送前先把代理打开；");
+  say("     也可以改用 SSH 一劳永逸 —— 见《维护手册》7.3。");
+}
 say();
 say("======================================================");
 
