@@ -37,7 +37,16 @@
 
 ```
 D:\hazard-ledger-lan\
-├── server.js               # 服务端（Node.js，含全部 API + 令牌鉴权）
+├── server.js               # 服务端入口（起服务 + 鉴权 + 路由分发 + 启动）
+├── lib\                     # 服务端业务模块（2026-09-29 从 server.js 拆分）
+│   ├── config.js             #   配置与枚举常量
+│   ├── util.js               #   口令散列 / 日期 / 响应
+│   ├── models.js             #   行↔JSON 映射 / 筛选 SQL
+│   ├── authz.js              #   会话令牌 / 权限矩阵 / 操作日志
+│   ├── db.js                 #   连接池 / 建库建表 / 字段注释
+│   ├── xlsx.js               #   零依赖 xlsx 写出
+│   ├── forms.js              #   四张纸质表单版式
+│   └── handlers\             #   各接口实现（auth-users/hazards/export/files/import）
 ├── config.json             # 配置：端口 + 数据库连接（含密码）
 ├── package.json            # 依赖声明（仅 pg）
 ├── public\                 # 前端页面
