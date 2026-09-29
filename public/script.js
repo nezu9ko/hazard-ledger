@@ -1797,7 +1797,7 @@ async function renderHazardDetail(id) {
       </div>
       <div class="form-grid" style="margin-top:16px">
           <div class="field span-2"><label>复查人员 <span class="req">*</span></label>
-            ${pickerHtml("reviewer", "请选择复查人员")}</div>
+            ${pickerHtml("reviewer", "请选择复查人员")}
           <div style="font-size:12px;color:#9ca3af;margin-top:4px">默认取登记时指定的复查人；只有该人（或管理员）能提交复查</div></div>
         <div class="field span-2"><label>复查结果 <span class="req">*</span></label><textarea class="textarea" id="reviewResult" placeholder="请输入复查结果描述"></textarea></div>
       </div>
