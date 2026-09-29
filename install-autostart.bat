@@ -11,7 +11,7 @@ REM =====================================================================
 
 set "TASK=HazardLedger"
 set "RULE=HazardLedger 3000"
-set "APPDIR=D:\hazard-ledger-lan"
+set "APPDIR=D:\hazard-ledger\app"
 set "RUNNER=%APPDIR%\run-server.bat"
 set "LOG=%APPDIR%\deploy-setup.log"
 

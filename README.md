@@ -36,7 +36,7 @@
 ## 二、目录结构
 
 ```
-D:\hazard-ledger-lan\
+D:\hazard-ledger\app\
 ├── server.js               # 服务端入口（起服务 + 鉴权 + 路由分发 + 启动）
 ├── lib\                     # 服务端业务模块（2026-09-29 从 server.js 拆分）
 │   ├── config.js             #   配置与枚举常量
@@ -100,13 +100,13 @@ D:\hazard-ledger-lan\
 ## 四、数据库
 
 - **PostgreSQL 17.6**，服务名 `PostgreSQL-17`（开机自启，以 LocalSystem 运行）
-- **数据目录：`D:\hazard-ledger-lan\pgdata`**（已迁入本项目，随项目走）
+- **数据目录：`D:\hazard-ledger\app\pgdata`**（已迁入本项目，随项目走）
 - 程序目录：`D:\PostgreSQL\pgsql`（二进制，位置未变）
 - 库名：`hazard_ledger`（首次启动自动创建；表也自动创建）
 - 用户：`postgres` ｜ 密码：见 `config.json`（`db.password`）
 - 连接：`127.0.0.1:5432`
 
-> 因为数据已在本项目内，**拷贝整个 `D:\hazard-ledger-lan` 文件夹即带走完整系统**（程序 + 数据库）。
+> 因为数据已在本项目内，**拷贝整个 `D:\hazard-ledger\app` 文件夹即带走完整系统**（程序 + 数据库）。
 
 数据表：
 - `hazard` — 隐患台账主表
@@ -122,7 +122,7 @@ D:\hazard-ledger-lan\
 REM 手动备份一次
 schtasks /Run /TN HazardLedgerBackup
 REM 或直接执行
-D:\hazard-ledger-lan\backup-db.bat
+D:\hazard-ledger\app\backup-db.bat
 ```
 
 ### 备份数据库（手动导出）

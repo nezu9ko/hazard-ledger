@@ -11,7 +11,7 @@ REM =====================================================================
 
 set "APP_TASK=HazardLedger"
 set "BAK_TASK=HazardLedgerBackup"
-set "APPDIR=D:\hazard-ledger-lan"
+set "APPDIR=D:\hazard-ledger\app"
 set "LOG=%APPDIR%\finalize.log"
 
 net session >nul 2>&1

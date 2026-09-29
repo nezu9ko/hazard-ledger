@@ -12,7 +12,7 @@ REM =====================================================================
 
 set "TASK=HazardLedger"
 set "PORT=3000"
-set "LOG=D:\hazard-ledger-lan\restart.log"
+set "LOG=D:\hazard-ledger\app\restart.log"
 
 net session >nul 2>&1
 if %errorlevel% neq 0 (

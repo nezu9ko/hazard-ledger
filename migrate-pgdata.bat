@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 REM =====================================================================
 REM  Migrate the PostgreSQL DATA directory into the hazard project.
 REM    OLD: D:\PostgreSQL\data
-REM    NEW: D:\hazard-ledger-lan\pgdata
+REM    NEW: D:\hazard-ledger\app\pgdata
 REM  Binaries stay at D:\PostgreSQL\pgsql (unchanged).
 REM  The Windows service IS re-registered to point at the new data dir.
 REM  On any failure it automatically rolls back.
@@ -13,12 +13,12 @@ REM  MUST be run as Administrator.
 REM =====================================================================
 
 set "OLD_DATA=D:\PostgreSQL\data"
-set "NEW_DATA=D:\hazard-ledger-lan\pgdata"
+set "NEW_DATA=D:\hazard-ledger\app\pgdata"
 set "PGBIN=D:\PostgreSQL\pgsql\bin"
 set "PGLOG=D:\PostgreSQL\logs\pg-service.log"
 set "PGSVC=PostgreSQL-17"
 set "APPTASK=HazardLedger"
-set "APPDIR=D:\hazard-ledger-lan"
+set "APPDIR=D:\hazard-ledger\app"
 set "LOG=%APPDIR%\migrate-pgdata.log"
 
 net session >nul 2>&1
@@ -91,7 +91,7 @@ goto :done
 
 :patch_scripts
 echo   patching D:\PostgreSQL\*.bat >> "%LOG%"
-powershell -NoProfile -Command "Get-ChildItem 'D:\PostgreSQL\*.bat' | ForEach-Object { $c = Get-Content -Raw $_.FullName; $c = $c -replace [regex]::Escape('D:\PostgreSQL\data'), 'D:\hazard-ledger-lan\pgdata'; Set-Content -NoNewline -Encoding ascii $_.FullName $c }" >> "%LOG%" 2>&1
+powershell -NoProfile -Command "Get-ChildItem 'D:\PostgreSQL\*.bat' | ForEach-Object { $c = Get-Content -Raw $_.FullName; $c = $c -replace [regex]::Escape('D:\PostgreSQL\data'), 'D:\hazard-ledger\app\pgdata'; Set-Content -NoNewline -Encoding ascii $_.FullName $c }" >> "%LOG%" 2>&1
 exit /b 0
 
 :fail
