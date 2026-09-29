@@ -100,10 +100,11 @@ const STATUSES = ["pending", "rectifying", "closed"];                           
 // 登记、整改、复查都不再按角色授权，而是**按人**：整改填本人、复查由指定复查人。
 const ROLES = ["user", "admin"];
 
-/** 部门列表（一级菜单）；责任人下拉按此分组，人名作为二级
- *  ★ 这里列出的部门会**全部**出现在下拉框里（哪怕该部门暂时没人），
- *    与前端 public/script.js 的 DEPARTMENTS 必须**逐字一致**。 */
-const DEPARTMENTS = [
+/** 部门列表（一级菜单）；责任人下拉按此分组，人名作为二级。
+ *  ★ 这里列出的部门会**全部**出现在下拉框里（哪怕该部门暂时没人）。
+ *  ⚠️ 从 2026-09-29 起，部门改为**存在数据库里、可在「用户管理 → 部门管理」里增删改**；
+ *     这个常量只在**首次建库时用来播种**，之后就以数据库为准（见 handleDepartments）。 */
+const DEPARTMENTS_SEED = [
   "领导班子", "地测部", "安全部", "通风部", "环保部", "机电部", "生产技术部",
   "采矿车间", "基建部", "选矿厂", "财务部", "综合管理部",
 ];
@@ -498,6 +499,9 @@ function requiredRoles(method, path) {
   if (path === "/api/stats") return null;
   if (path === "/api/seed") return ["admin"];
   if (path === "/api/import") return ["admin"];      // 批量导入：仅系统管理员
+  // 部门字典：看得到就行（选择器/筛选都要用）；增删改仅系统管理员
+  if (path === "/api/departments") return method === "GET" ? null : ["admin"];
+  if (path.startsWith("/api/departments/")) return ["admin"];
   // 操作日志（仅系统管理员）
   if (path === "/api/logs") return ["admin"];
   // 图片维护（仅系统管理员）
@@ -702,10 +706,31 @@ async function initDatabase() {
     );
     CREATE INDEX IF NOT EXISTS idx_oplog_created ON operation_log(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_oplog_target ON operation_log(target_id);
+
+    -- 部门字典：可在「用户管理 → 部门管理」里增删改。
+    -- sort_order 决定下拉框/筛选里的先后顺序，新增的排在最后。
+    CREATE TABLE IF NOT EXISTS departments (
+      name TEXT PRIMARY KEY,
+      sort_order INT NOT NULL DEFAULT 0
+    );
   `);
 
   // 3) 写入表 / 字段中文注释（幂等，每次启动同步一遍）
   await applySchemaComments();
+
+  // 3.5) 播种部门字典（只在空表时播一次，之后以数据库为准）
+  {
+    const dc = await pool.query("SELECT COUNT(*)::int AS c FROM departments");
+    if (dc.rows[0].c === 0) {
+      for (let i = 0; i < DEPARTMENTS_SEED.length; i += 1) {
+        await pool.query(
+          "INSERT INTO departments (name, sort_order) VALUES ($1,$2) ON CONFLICT (name) DO NOTHING",
+          [DEPARTMENTS_SEED[i], i]
+        );
+      }
+      console.log(`[DB] 已播种 ${DEPARTMENTS_SEED.length} 个部门（可在「用户管理 → 部门管理」中维护）`);
+    }
+  }
 
   // 4) 播种默认管理员
     const c = await pool.query("SELECT COUNT(*)::int AS c FROM users");
@@ -2128,6 +2153,74 @@ const IMAGE_URL_RE = /\.(jpe?g|png|webp|gif)$/i;
     return sendJson(res, { url: `/uploads/${filename}`, size: buf.length, kind: type.kind, mime }, 201);
   }
 
+/* ---------------- 部门字典 ----------------
+ *   GET    /api/departments            列出（任意已登录用户即可 —— 选择器和筛选都要用）
+ *   POST   /api/departments            新增（仅 admin）
+ *   PATCH  /api/departments/:name      改名（仅 admin）—— 会同步改所有用户身上的部门名
+ *   DELETE /api/departments/:name      删除（仅 admin）—— 还有人挂在这个部门下就拒绝
+ *
+ * 为什么改成存库：原来是写死在代码里的常量，加个部门要找开发改代码、重启服务。
+ * 现在管理员在「用户管理 → 部门管理」里自己维护。
+ */
+async function handleDepartments(req, res, url, name, user) {
+  if (!name) {
+    if (req.method === "GET") {
+      const r = await pool.query("SELECT name FROM departments ORDER BY sort_order, name");
+      return sendJson(res, { items: r.rows.map((x) => x.name) });
+    }
+    if (req.method === "POST") {
+      let body;
+      try { body = await readBody(req); } catch (e) { return badRequest(res, e.message); }
+      const nm = String(body.name || "").trim();
+      if (!nm) return badRequest(res, "请输入部门名称");
+      if (nm.length > 30) return badRequest(res, "部门名称过长（不超过 30 字）");
+      if (/[\r\n\t]/.test(nm)) return badRequest(res, "部门名称不能包含换行或制表符");
+      const dup = await pool.query("SELECT 1 FROM departments WHERE name = $1", [nm]);
+      if (dup.rowCount > 0) return badRequest(res, `部门「${nm}」已存在`);
+      const mx = await pool.query("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM departments");
+      await pool.query("INSERT INTO departments (name, sort_order) VALUES ($1,$2)", [nm, mx.rows[0].n]);
+      await logOp(user, "create_department", { targetType: "department", targetCode: nm, detail: `新增部门：${nm}` });
+      return sendJson(res, { success: true, name: nm }, 201);
+    }
+    return sendJson(res, { error: { code: "METHOD_NOT_ALLOWED", message: "不支持的方法" } }, 405);
+  }
+
+  // 带名字：改名 / 删除
+  const old = decodeURIComponent(name);
+  const found = await pool.query("SELECT * FROM departments WHERE name = $1", [old]);
+  if (found.rowCount === 0) return notFound(res, "部门不存在");
+
+  if (req.method === "DELETE") {
+    const used = await pool.query("SELECT COUNT(*)::int AS c FROM users WHERE department = $1", [old]);
+    if (used.rows[0].c > 0) {
+      return badRequest(res, `还有 ${used.rows[0].c} 个用户属于「${old}」，请先把他们改到别的部门再删除`);
+    }
+    await pool.query("DELETE FROM departments WHERE name = $1", [old]);
+    await logOp(user, "delete_department", { targetType: "department", targetCode: old, detail: `删除部门：${old}` });
+    return sendJson(res, { success: true });
+  }
+
+  if (req.method === "PATCH") {
+    let body;
+    try { body = await readBody(req); } catch (e) { return badRequest(res, e.message); }
+    const nm = String(body.name || "").trim();
+    if (!nm) return badRequest(res, "请输入新的部门名称");
+    if (nm.length > 30) return badRequest(res, "部门名称过长（不超过 30 字）");
+    if (nm === old) return sendJson(res, { success: true, name: nm });
+    const dup = await pool.query("SELECT 1 FROM departments WHERE name = $1", [nm]);
+    if (dup.rowCount > 0) return badRequest(res, `部门「${nm}」已存在`);
+    // 改名要**同时改用户身上的部门**，否则这些用户会变成"不属于任何部门"（部门筛选就查不到了）
+    const moved = await pool.query("UPDATE users SET department = $1 WHERE department = $2", [nm, old]);
+    await pool.query("UPDATE departments SET name = $1 WHERE name = $2", [nm, old]);
+    await logOp(user, "rename_department", {
+      targetType: "department", targetCode: old,
+      detail: `部门改名：${old} → ${nm}（同步更新 ${moved.rowCount} 个用户）`,
+    });
+    return sendJson(res, { success: true, name: nm, usersMoved: moved.rowCount });
+  }
+  return sendJson(res, { error: { code: "METHOD_NOT_ALLOWED", message: "不支持的方法" } }, 405);
+}
+
 /* ---------------- 台账导入 ----------------
  *   POST /api/import        （仅系统管理员）
  *
@@ -2510,8 +2603,9 @@ const server = http.createServer(async (req, res) => {
           + (includeAdmin ? "" : "WHERE role <> 'admin' ")
           + "ORDER BY COALESCE(department, '\uffff'), user_name"
         );
+        const dr = await pool.query("SELECT name FROM departments ORDER BY sort_order, name");
         return sendJson(res, {
-          departments: DEPARTMENTS,
+          departments: dr.rows.map((x) => x.name),
           items: r.rows.map((u) => ({ id: u.id, userName: u.user_name, role: u.role, department: u.department || "" })),
         });
       }
@@ -2538,10 +2632,12 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/photos") return await handlePhotosMaintenance(req, res, sessionUser);
     if (p === "/api/reminders") return await handleReminders(res, sessionUser);
     if (p === "/api/seed") return await handleSeed(req, res);
-      if (p === "/api/import") {
-        let b; try { b = await readBody(req, MAX_UPLOAD_BYTES * 2); } catch (e) { return badRequest(res, e.message); }
-        return await handleImport(req, res, b, sessionUser);
-      }
+    if (p === "/api/departments") return await handleDepartments(req, res, url, null, sessionUser);
+    if (p.startsWith("/api/departments/")) return await handleDepartments(req, res, url, p.slice("/api/departments/".length), sessionUser);
+    if (p === "/api/import") {
+      let b; try { b = await readBody(req, MAX_UPLOAD_BYTES * 2); } catch (e) { return badRequest(res, e.message); }
+      return await handleImport(req, res, b, sessionUser);
+    }
     if (p === "/api/users") return await handleUsers(req, res, url, null, sessionUser);
     if (p.startsWith("/api/users/")) return await handleUsers(req, res, url, decodeURIComponent(p.slice("/api/users/".length)), sessionUser);
     if (p === "/api/hazards") return await handleHazards(req, res, url, null, sessionUser);

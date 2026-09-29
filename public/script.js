@@ -48,10 +48,21 @@ const STATUS_FILTER_LABELS = { closed: "已验收", unclosed: "未验收", overd
 // 角色只分两类（登记/整改/复查已改为按"人"授权，不再按角色）
 const ROLE_LABELS = { user: "普通用户", admin: "系统管理员" };
 // 部门列表（责任人下拉的一级分组）
-// 部门列表（与 server.js 的 DEPARTMENTS 必须逐字一致）。
-// ★ 下拉框里**所有部门都会出现**，哪怕该部门暂时没人。
-const DEPARTMENTS = ["领导班子", "地测部", "安全部", "通风部", "环保部", "机电部", "生产技术部",
+// 部门列表。★ 下拉框里**所有部门都会出现**，哪怕该部门暂时没人。
+// ⚠️ 2026-09-29 起部门存在数据库里、可在「用户管理 → 部门管理」增删改，
+// 所以这里必须是 let（用 /api/user-options 返回的 departments 覆盖），
+// 下面这份只是"接口还没回来时"的兜底默认值。
+let DEPARTMENTS = ["领导班子", "地测部", "安全部", "通风部", "环保部", "机电部", "生产技术部",
   "采矿车间", "基建部", "选矿厂", "财务部", "综合管理部"];
+
+/** 拉一次最新的部门列表并刷新本地缓存（选择器/筛选都读 DEPARTMENTS） */
+async function refreshDepartments() {
+  try {
+    const r = await api.get("/departments");
+    if (Array.isArray(r.items) && r.items.length) DEPARTMENTS = r.items;
+  } catch { /* 拿不到就沿用兜底默认值，不影响使用 */ }
+  return DEPARTMENTS;
+}
 const LEVEL_COLORS = { major: "#dc2626", general: "#ca8a04" };
 
 /* ---------- 通用工具 ---------- */
@@ -524,6 +535,9 @@ const ACTION_LABELS = {
   delete_hazard: "删除隐患",
   export_hazard: "导出隐患台账",
   import_hazard: "导入隐患台账",
+  create_department: "新增部门",
+  rename_department: "部门改名",
+  delete_department: "删除部门",
   create_user: "新增用户",
   update_user_role: "修改角色",
   reset_password: "重置密码",
@@ -1831,6 +1845,7 @@ function renderHazardNew() {
     try {
       const r = await api.get("/user-options");
       const items = r.items || [];
+      if (Array.isArray(r.departments) && r.departments.length) DEPARTMENTS = r.departments;
       const me = currentUser();
       // 排查人员默认 = 当前登录人。值用**姓名**（后端 inspector 是文本字段）。
       // 注意 /api/user-options 刻意**不含 admin**（admin 不作为整改责任人），
@@ -2127,6 +2142,14 @@ async function renderUsers() {
       ${isAdmin() ? `<button class="btn btn-primary" id="btnAddUser">${icon("userPlus")}添加用户</button>` : ""}
     </div>
     <div class="card card-pad" id="userCard"><div class="loading"><div class="spinner"></div>加载中...</div></div>
+    ${isAdmin() ? `<div class="card card-pad" id="deptCard">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px">
+        <div><div style="font-size:16px;font-weight:600">部门管理</div>
+          <div style="font-size:12.5px;color:#9ca3af;margin-top:2px">部门用于「用户 → 所属部门」和台账的「部门/单位」筛选；下拉框里所有部门都会列出，哪怕暂时没人</div></div>
+        <button class="btn btn-primary btn-sm" id="btnAddDept">${icon("plus", 14)}添加部门</button>
+      </div>
+      <div id="deptBox"><div class="loading"><div class="spinner"></div>加载中...</div></div>
+    </div>` : ""}
     ${isAdmin() ? `<div class="card card-pad" id="maintCard">
       <div style="font-size:16px;font-weight:600;margin-bottom:14px">系统维护</div>
       <div id="maintBox"><div class="loading"><div class="spinner"></div>加载中...</div></div>
@@ -2134,8 +2157,99 @@ async function renderUsers() {
   </div>`);
   bindLayout();
   if (isAdmin()) $("#btnAddUser").onclick = openAddUser;
+  if (isAdmin() && $("#btnAddDept")) {
+    $("#btnAddDept").onclick = () => openModal({
+      title: "添加部门",
+      desc: "新增的部门会出现在「用户管理」的部门下拉、台账的「部门/单位」筛选，以及各类人员选择器的分组里。",
+      bodyHtml: `<div class="field"><label>部门 / 单位名称</label><input class="input" id="deptName" placeholder="如：机电部、采矿车间、外委施工单位"></div>
+        <div class="err-text" id="deptErr" style="display:none;margin-top:10px"></div>`,
+      confirmText: "添加",
+      onConfirm: async (ov) => {
+        const nm = $("#deptName", ov).value.trim();
+        const errEl = $("#deptErr", ov);
+        if (!nm) { errEl.textContent = "请输入部门名称"; errEl.style.display = "block"; return false; }
+        try { await api.post("/departments", { name: nm }); toast("已添加部门", nm); loadDepartments(); }
+        catch (err) { errEl.textContent = err.message; errEl.style.display = "block"; return false; }
+      },
+    });
+  }
   loadUsers();
-  if (isAdmin()) loadMaintenance();
+  if (isAdmin()) { loadDepartments(); loadMaintenance(); }
+}
+
+/* ---------- 部门管理 ---------- */
+
+async function loadDepartments() {
+  const box = $("#deptBox");
+  if (!box) return;
+  let list;
+  try {
+    const r = await api.get("/departments");
+    list = r.items || [];
+    if (list.length) DEPARTMENTS = list;         // 同步缓存，选择器/筛选都用它
+  } catch (err) {
+    box.innerHTML = `<div class="empty"><div class="e-title">加载失败</div><div class="e-sub">${esc(err.message)}</div></div>`;
+    return;
+  }
+  if (!list.length) { box.innerHTML = `<div class="empty"><div class="e-title">还没有部门</div><div class="e-sub">点右上角「添加部门」开始</div></div>`; return; }
+
+  // 顺便统计每个部门有多少人，帮助判断能不能删
+  const counts = {};
+  try {
+    const us = await api.get("/users");
+    (Array.isArray(us) ? us : us.items || []).forEach((u) => {
+      if (u.department) counts[u.department] = (counts[u.department] || 0) + 1;
+    });
+  } catch { /* 统计不到就不显示人数，不影响增删改 */ }
+
+  box.innerHTML = `<div class="dept-list">${list.map((d) => `
+    <span class="dept-chip" data-dept="${esc(d)}">
+      <b>${esc(d)}</b>
+      <span class="n">${counts[d] ? counts[d] + " 人" : "暂无人员"}</span>
+      <button class="dept-op" data-rename="${esc(d)}" title="改名">${icon("pencil", 13)}</button>
+      <button class="dept-op danger" data-del="${esc(d)}" title="删除">${icon("trash", 13)}</button>
+    </span>`).join("")}</div>
+    <div style="font-size:12.5px;color:#9ca3af;margin-top:12px">
+      共 ${list.length} 个部门。改名会同步更新该部门下所有用户；<strong>还有人挂着的部门不允许删除</strong>。
+    </div>`;
+
+  box.querySelectorAll("[data-rename]").forEach((b) => {
+    b.onclick = () => {
+      const cur = b.dataset.rename;
+      openModal({
+        title: "重命名部门",
+        desc: `把「${cur}」改成新名字；该部门下的用户会一并改过来。`,
+        bodyHtml: `<div class="field"><label>新的部门名称</label><input class="input" id="deptNewName" value="${esc(cur)}"></div>
+          <div class="err-text" id="deptErr" style="display:none;margin-top:10px"></div>`,
+        confirmText: "保存",
+        onConfirm: async (ov) => {
+          const nm = $("#deptNewName", ov).value.trim();
+          const errEl = $("#deptErr", ov);
+          if (!nm) { errEl.textContent = "请输入部门名称"; errEl.style.display = "block"; return false; }
+          try {
+            const r = await api.patch(`/departments/${encodeURIComponent(cur)}`, { name: nm });
+            toast("已改名", r.usersMoved ? `同时更新了 ${r.usersMoved} 个用户` : "该部门下暂无用户");
+            loadDepartments(); loadUsers();
+          } catch (err) { errEl.textContent = err.message; errEl.style.display = "block"; return false; }
+        },
+      });
+    };
+  });
+  box.querySelectorAll("[data-del]").forEach((b) => {
+    b.onclick = () => {
+      const cur = b.dataset.del;
+      const n = counts[cur] || 0;
+      if (n > 0) { toast("不能删除", `还有 ${n} 个用户属于「${cur}」，请先把他们改到别的部门`, "err", 6000); return; }
+      openModal({
+        title: "删除部门", desc: `确定删除部门「${cur}」吗？此操作不可撤销。`,
+        confirmText: "确认删除", danger: true,
+        onConfirm: async () => {
+          try { await api.del(`/departments/${encodeURIComponent(cur)}`); toast("已删除"); loadDepartments(); }
+          catch (err) { toast("删除失败", err.message, "err"); return false; }
+        },
+      });
+    };
+  });
 }
 
 /* ---------- 系统维护：无引用图片清理 ---------- */

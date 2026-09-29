@@ -392,6 +392,24 @@ table.tbl { width: 100%; border-collapse: collapse; min-width: 1040px; font-size
 .role-user { background: #f3f4f6; color: #4b5563; border-color: #e5e7eb; }
 .role-admin { background: #ede9fe; color: #6d28d9; border-color: #ddd6fe; }
 
+/* ---------- 部门管理（用户管理页） ---------- */
+.dept-list { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.dept-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 10px 7px 12px; border-radius: 999px;
+  background: #f8fafc; border: 1px solid var(--border);
+  font-size: 13px; color: #334155;
+}
+.dept-chip b { font-weight: 500; }
+.dept-chip .n { font-size: 12px; color: var(--text-light); }
+.dept-op {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
+  background: none; color: var(--text-muted); cursor: pointer;
+}
+.dept-op:hover { background: #e2e8f0; color: var(--text); }
+.dept-op.danger:hover { background: #fee2e2; color: var(--danger); }
+
 /* ---------- 分页 ---------- */
 .pager {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
