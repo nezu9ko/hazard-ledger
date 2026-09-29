@@ -25,6 +25,18 @@ if %errorlevel% neq 0 (
   exit /b 1
 )
 
+REM ---- PRODUCTION GUARD ----------------------------------------------
+REM  This script restarts the PRODUCTION service (kills whatever listens
+REM  on port 3000). Only the production checkout owns pgdata (git-ignored).
+if not exist "%APPDIR%\pgdata" (
+  echo [ERROR] Refusing to run: this is NOT the production folder.
+  echo         %APPDIR%\pgdata not found.
+  echo         Use the dev launcher to (re)start the development server.
+  if not "%1"=="nopause" pause
+  exit /b 1
+)
+REM --------------------------------------------------------------------
+
 echo ==== restart ==== > "%LOG%"
 echo time: %date% %time% >> "%LOG%"
 

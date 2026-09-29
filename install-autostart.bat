@@ -27,6 +27,21 @@ if %errorlevel% neq 0 (
   exit /b 1
 )
 
+REM ---- PRODUCTION GUARD ----------------------------------------------
+REM  This script registers/repairs the PRODUCTION service. Since it now
+REM  derives its path from %~dp0, running it from a DEV copy would point
+REM  the production task at the dev folder. Only the production checkout
+REM  has pgdata (git-ignored), so use that as the identity marker.
+if not exist "%APPDIR%\pgdata" (
+  echo [ERROR] Refusing to run: this is NOT the production folder.
+  echo         %APPDIR%\pgdata not found.
+  echo         This script only operates on the production copy
+  echo         (the one that owns pgdata and port 3000).
+  if not "%1"=="nopause" pause
+  exit /b 1
+)
+REM --------------------------------------------------------------------
+
 echo ==== deployment setup ==== > "%LOG%"
 echo time: %date% %time% >> "%LOG%"
 

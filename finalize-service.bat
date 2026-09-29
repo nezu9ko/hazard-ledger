@@ -24,6 +24,18 @@ if %errorlevel% neq 0 (
   exit /b 1
 )
 
+REM ---- PRODUCTION GUARD ----------------------------------------------
+REM  Only the production checkout owns pgdata (git-ignored). Without this
+REM  guard, running the script from a DEV copy would re-register the
+REM  production tasks against the dev folder.
+if not exist "%APPDIR%\pgdata" (
+  echo [ERROR] Refusing to run: this is NOT the production folder.
+  echo         %APPDIR%\pgdata not found.
+  if not "%1"=="nopause" pause
+  exit /b 1
+)
+REM --------------------------------------------------------------------
+
 echo ==== finalize deployment ==== > "%LOG%"
 echo time: %date% %time% >> "%LOG%"
 
