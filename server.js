@@ -2110,6 +2110,8 @@ const UPLOAD_TYPES = {
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { ext: ".xlsx", kind: "doc", max: 20 * MB },
 };
 const MAX_UPLOAD_BYTES = 20 * MB;   // 单文件解码后上限（base64 传输时约需 1.4 倍）
+/** 允许的图片扩展名集合（从 UPLOAD_TYPES 反推，供导入嵌入图时校验，避免两处各写一份名单） */
+const UPLOAD_IMAGE_EXTS = new Set(Object.values(UPLOAD_TYPES).filter((t) => t.kind === "image").map((t) => t.ext));
 
 /** 判断一个附件 URL 是否是图片（供前端之外的服务端场景复用） */
 const IMAGE_URL_RE = /\.(jpe?g|png|webp|gif)$/i;
@@ -2297,6 +2299,8 @@ async function handleImport(req, res, body, user) {
       categoryGuessed: it.categoryGuessed,
       rectifyPerson: it.rectifyPerson, rectifyFund: it.rectifyFund, planDeadline: it.planDeadline,
       rectifyMeasureLen: (it.rectifyMeasure || "").length,
+      photoCount: (it.photoIds || []).length,
+      photoNames: (it.photos || []).map((x) => x.name).filter(Boolean),
       reviewer: it.reviewer || "",
       linkedUser: rp ? rp.id : null,
     });
@@ -2314,6 +2318,7 @@ async function handleImport(req, res, body, user) {
     problematic: parsed.badItems.length,
     willCreateUsers: [...missingPersons],
     reviewer: reviewerName || "(未指定)",
+    photoTotal: parsed.photoTotal || 0,
     preview,
   };
   if (body.commit !== true) return sendJson(res, summary, 200);
@@ -2340,6 +2345,7 @@ async function handleImport(req, res, body, user) {
   // ② 逐条插入（每条单独 try，一条坏不影响其余，最后汇总）
   const reviewerUser = reviewerName ? userByName[reviewerName] : null;
   let created = 0;
+  let photosSaved = 0;
   const errors = [];
   for (const it of parsed.items) {
     if (!allowDup && dupKeys.has(`${it.location}|${it.description}`)) continue;
@@ -2361,12 +2367,39 @@ async function handleImport(req, res, body, user) {
       const closed = !!(it.reviewResult && (it.actualCompleteDate || it.reviewResult));
       const status = closed ? "closed" : "pending";
 
+      // 先把这一行的嵌入图落到 uploads/，再入库（图片写失败不影响这条隐患本身，但要记下来）
+      const hazardPhotos = [];
+      for (const ph of it.photos || []) {
+        const src = parsed.images[ph.id];
+        if (!src || !src.buffer) continue;
+        const ext = "." + (src.ext || "jpg");
+        // 只收系统本身就支持的那几种图片扩展名（从 UPLOAD_TYPES 反推，避免两处各写一份名单）
+        if (!UPLOAD_IMAGE_EXTS.has(ext)) {
+          errors.push({ rowNo: it.rowNo, msg: `图片格式不支持（${ext}），已跳过该图` });
+          continue;
+        }
+        if (src.buffer.length > 8 * MB) {
+          errors.push({ rowNo: it.rowNo, msg: `图片过大（${Math.round(src.buffer.length / 1024 / 1024)}MB > 8MB），已跳过该图` });
+          continue;
+        }
+        // 文件名沿用系统的 24 位随机命名（不可枚举）；展示名用 WPS 里填的描述
+        const fn = `${genId()}${ext}`;
+        try {
+          await fs.promises.writeFile(path.join(UPLOAD_DIR, fn), src.buffer);
+          const label = /^\d+$/.test(ph.name || "") ? "现场照片" : (ph.name || "现场照片");
+          hazardPhotos.push({ u: `/uploads/${fn}`, n: `${label}${ext}` });
+        } catch (e) {
+          errors.push({ rowNo: it.rowNo, msg: `图片保存失败：${e.message}` });
+        }
+      }
+
       const newId = genId();
       await pool.query(
         `INSERT INTO hazard (id,hazard_code,inspect_date,inspector,location,description,category,level,
           rectify_measure,rectify_person,rectify_user_id,rectify_fund,plan_deadline,
-          reviewer,reviewer_user_id,status,actual_complete_date,review_date,review_result,closed_at,created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+          reviewer,reviewer_user_id,status,actual_complete_date,review_date,review_result,closed_at,created_at,
+          hazard_photos)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
         [
           newId, hazardCode, it.inspectDate, it.inspector, it.location, it.description, it.category, it.level,
           it.rectifyMeasure || null, it.rectifyPerson || null, rp ? rp.id : null, String(it.rectifyFund || "0"),
@@ -2378,10 +2411,12 @@ async function handleImport(req, res, body, user) {
           closed ? new Date() : null,
           // 登记时间也按排查日期回填，避免"8 月发现的隐患显示成今天登记"
           new Date(it.inspectDate + "T09:00:00"),
+          hazardPhotos.length ? JSON.stringify(hazardPhotos) : null,
         ]
       );
       dupKeys.add(`${it.location}|${it.description}`);
       created += 1;
+      photosSaved += hazardPhotos.length;
     } catch (e) {
       errors.push({ rowNo: it.rowNo, msg: e.message });
     }
@@ -2389,12 +2424,12 @@ async function handleImport(req, res, body, user) {
 
   await logOp(user, "import_hazard", {
     targetType: "hazard", targetCode: parsed.sheetName,
-    detail: `从「${String(body.fileName || "xlsx").slice(0, 60)}」导入 ${created} 条｜新建用户 ${createdUsers.length} 个｜跳过 ${dupCount} 条｜失败 ${errors.length} 条`,
+    detail: `从「${String(body.fileName || "xlsx").slice(0, 60)}」导入 ${created} 条（含图片 ${photosSaved} 张）｜新建用户 ${createdUsers.length} 个｜跳过 ${dupCount} 条｜失败 ${errors.length} 条`,
   });
-  console.log(`[IMPORT] ${user?.user_name || "-"} → 成功 ${created} 条，新建用户 ${createdUsers.length} 个，失败 ${errors.length} 条`);
+  console.log(`[IMPORT] ${user?.user_name || "-"} → 成功 ${created} 条（图片 ${photosSaved} 张），新建用户 ${createdUsers.length} 个，失败 ${errors.length} 条`);
 
   return sendJson(res, Object.assign({}, summary, {
-    commit: true, created, usersCreated: createdUsers, skipped: dupCount, errors,
+    commit: true, created, usersCreated: createdUsers, skipped: dupCount, photosSaved, errors,
   }), 201);
 }
 

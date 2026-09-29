@@ -1210,6 +1210,10 @@ function openImportPreview(file, dataUrl, pv) {
   const cell = (t) => `<td style="padding:4px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top">${t}</td>`;
   const rows = pv.preview.map((p) => {
     const okSign = p.action === "create" ? '<span style="color:#16a34a">✓</span>' : '<span style="color:#9ca3af">—</span>';
+    // 图片张数单列一栏：导入最怕的就是"图没进来"却没人发现
+    const photoCell = p.photoCount
+      ? `<span style="color:#0f6e56">${p.photoCount} 张</span>${p.photoNames && p.photoNames.length ? `<div style="font-size:11.5px;color:#9ca3af">${esc(p.photoNames.join("、"))}</div>` : ""}`
+      : '<span style="color:#d97706">无</span>';
     return `<tr>
       ${cell(`<span style="color:#9ca3af">${p.rowNo}</span>`)}
       ${cell(okSign)}
@@ -1220,6 +1224,7 @@ function openImportPreview(file, dataUrl, pv) {
       ${cell(`${esc(CATEGORY_LABELS[p.category] || p.category)}${p.categoryGuessed ? '<span style="color:#9ca3af;font-size:12px"> (按描述推断)</span>' : ""}`)}
       ${cell(esc(p.rectifyPerson || "—") + (p.linkedUser ? "" : '<span style="color:#d97706;font-size:12px"> (无账号)</span>'))}
       ${cell(esc(p.planDeadline || "—"))}
+      ${cell(photoCell)}
       ${cell(p.issues.length ? `<span style="color:#d97706">${esc(p.issues.join("；"))}</span>` : '<span style="color:#9ca3af">—</span>')}
     </tr>`;
   }).join("");
@@ -1234,6 +1239,7 @@ function openImportPreview(file, dataUrl, pv) {
         <div class="info-item"><div class="i-label">可导入</div><div class="i-value" style="color:#16a34a">${pv.creatable} 条</div></div>
         <div class="info-item"><div class="i-label">重复跳过</div><div class="i-value">${pv.duplicated} 条</div></div>
         <div class="info-item"><div class="i-label">有问题</div><div class="i-value" style="color:${pv.problematic ? "#d97706" : "#16a34a"}">${pv.problematic} 条</div></div>
+        <div class="info-item"><div class="i-label">嵌入图片</div><div class="i-value">${pv.photoTotal || 0} 张</div></div>
       </div>
       ${pv.notes.length ? `<div class="callout-info" style="margin-bottom:14px">
         ${icon("info", 15)}<div>${pv.notes.map(esc).join("<br>")}</div></div>` : ""}
@@ -1255,6 +1261,7 @@ function openImportPreview(file, dataUrl, pv) {
             <th style="padding:6px 8px;text-align:left">类别</th>
             <th style="padding:6px 8px;text-align:left">整改责任人</th>
             <th style="padding:6px 8px;text-align:left">时限</th>
+            <th style="padding:6px 8px;text-align:left">图片</th>
             <th style="padding:6px 8px;text-align:left">提示</th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -1272,7 +1279,7 @@ function openImportPreview(file, dataUrl, pv) {
           fileName: file.name, dataUrl, commit: true,
           options: { reviewer, createMissingUsers: true, newUserDepartment: "安全部" },
         });
-        toast("导入完成", `新增 ${r.created} 条${r.usersCreated.length ? `，新建用户 ${r.usersCreated.length} 个` : ""}${r.skipped ? `，跳过 ${r.skipped} 条` : ""}`, "ok", 6000);
+        toast("导入完成", `新增 ${r.created} 条${r.photosSaved ? `（含图片 ${r.photosSaved} 张）` : ""}${r.usersCreated.length ? `，新建用户 ${r.usersCreated.length} 个` : ""}${r.skipped ? `，跳过 ${r.skipped} 条` : ""}`, "ok", 6000);
         if (r.errors && r.errors.length) {
           toast("部分行未导入", `${r.errors.length} 条失败，详见操作日志`, "err", 6000);
         }

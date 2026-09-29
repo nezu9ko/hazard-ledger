@@ -28,6 +28,8 @@ const COL_HINTS = {
   rectifyFund: ["整改资金", "资金"],
   planDeadline: ["整改完成时间", "计划完成时限", "完成时间", "整改期限", "计划完成", "时限"],
   reviewer: ["复查人"],
+  // 图片列：认单元格里的 WPS 嵌入图（=DISPIMG("ID_xxx",1)）
+  photos: ["问题或隐患图片", "隐患图片", "现场照片", "隐患照片", "检查照片", "图片", "照片"],
   reviewDate: ["复查时间", "复查日期"],
   reviewResult: ["复查结果", "复查情况", "完成情况"],
   actualCompleteDate: ["实际完成日期", "实际完成时间", "完成日期"],
@@ -142,8 +144,18 @@ const addDays = (dateStr, n) => {
  * @returns {Object} 解析结果（明细见文件末尾 README 注释）
  */
 function parseHazardWorkbook(buf) {
-  const book = readXlsx(buf);
+  // images: true —— 顺带把 WPS 嵌入的单元格图片字节读出来（导入时要存进 uploads/）
+  const book = readXlsx(buf, { images: true });
   const notes = [];
+
+  /** 从单元格文本里抠出 WPS 嵌入图的 ID：`=DISPIMG("ID_XXXX",1)` 可能有多个（逗号/分号分隔） */
+  const dispImgIds = (text) => {
+    const out = [];
+    const re = /DISPIMG\s*\(\s*"([^"]+)"/gi;
+    let m;
+    while ((m = re.exec(String(text || "")))) out.push(m[1]);
+    return out;
+  };
 
   // ① 找出所有"像台账"的 sheet，并给每张表打分
   //    打分规则：核心字段（日期/排查人/描述/时限/责任人）权重 2，其它可识别字段权重 1。
@@ -151,7 +163,7 @@ function parseHazardWorkbook(buf) {
   //    结果日期和责任人都缺。
   const CORE = ["inspectDate", "inspector", "description", "planDeadline", "rectifyPerson"];
   const USEFUL = ["inspectDate", "inspector", "location", "description", "levelOrCategory",
-    "rectifyMeasure", "rectifyPerson", "rectifyFund", "planDeadline", "reviewer"];
+    "rectifyMeasure", "rectifyPerson", "rectifyFund", "planDeadline", "reviewer", "photos"];
   const candidates = book.sheets.map((sheet) => {
     const hr = findHeaderRow(sheet.rows);
     if (hr < 0) return null;
@@ -258,9 +270,29 @@ function parseHazardWorkbook(buf) {
       problems.push(`计划完成时限 ${planDeadline} 早于排查日期 ${inspectDate}`);
     }
 
+    // 图片：单元格里可能是 `=DISPIMG("ID_xxx",1)`（WPS 嵌入图），
+    // 也可能干脏写了个文件名/路径 —— 只处理前者，后者留个提示别静默丢掉
+    const photoRaw = raw("photos");
+    const photoIds = dispImgIds(photoRaw).filter((id) => book.images[id]);
+    const photos = photoIds.map((id) => {
+      const im = book.images[id];
+      return { id, name: im.name || "", ext: im.ext, size: im.size,
+        // 文件名：优先用 WPS 里填的描述（如"坝体"），否则用序号
+        fileName: `${im.name || "现场照片"}${im.name ? "" : ""}.${im.ext}` };
+    });
+    if (photoRaw && !photoIds.length) {
+      problems.push("图片列有内容但认不出是可导入的嵌入图（可能不是 WPS 的 DISPIMG 图片）");
+    }
+    if (photoRaw && dispImgIds(photoRaw).length > photoIds.length) {
+      const lost = dispImgIds(photoRaw).length - photoIds.length;
+      problems.push(`有 ${lost} 张图片在文件里找不到对应数据`);
+    }
+
     items.push({
       rowNo: r + 1,
       sourceSheet: primary.sheet.name,
+      photoIds,
+      photos,
       hazardCode: raw("hazardCode"),
       inspectDate,
       inspector: raw("inspector") || "未填写",
@@ -296,6 +328,9 @@ function parseHazardWorkbook(buf) {
     skipped: [],
     notes,
     total: items.length,
+    // 图片资源：{ [图片ID]: { name, ext, size, buffer } }，入库时由上层写到 uploads/
+    images: book.images,
+    photoTotal: items.reduce((n, it) => n + (it.photoIds || []).length, 0),
   };
 }
 

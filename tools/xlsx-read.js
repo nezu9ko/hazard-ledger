@@ -144,6 +144,51 @@ function fmtDateTime(d) {
   return `${fmtDate(d)} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 }
 
+/* ---------------- 单元格图片（WPS 的 =DISPIMG 嵌入图） ----------------
+ * WPS 把「嵌入单元格的图片」放在两个地方：
+ *   xl/cellimages.xml          每个 <xdr:pic> 里 cNvPr@name = 图片 ID（就是 DISPIMG 里那个）、
+ *                              cNvPr@descr = 用户填的描述（如"坝体"），a:blip@r:embed = 关系号
+ *   xl/_rels/cellimages.xml.rels   rId → media/imageN.jpeg
+ * 单元格里存的是公式 `=DISPIMG("ID_XXXX",1)`，所以要把这两头对上才拿得到图。
+ *
+ * 注意：这是 WPS 的私有格式。Excel 365 的「置于单元格中的图片」用的是另一套
+ * （richValue + xl/media），本函数不处理。
+ */
+function readCellImages(files) {
+  const xml = readEntry(files, "xl/cellimages.xml");
+  if (!xml) return {};
+  const rels = {};
+  const relXml = readEntry(files, "xl/_rels/cellimages.xml.rels");
+  if (relXml) {
+    eachElement(relXml, "Relationship", (a) => {
+      const at = attrs(`<x ${a}>`);
+      if (at.Id && at.Target) rels[at.Id] = at.Target.replace(/^\/?xl\//, "").replace(/^\//, "");
+    });
+  }
+  const out = {};
+  // 按 <xdr:pic> 切块，比按带前缀的标签名匹配更不容易踩命名空间的坑
+  const blocks = xml.match(/<xdr:pic\b[\s\S]*?<\/xdr:pic>/g) || [];
+  blocks.forEach((block) => {
+    const nameM = /<xdr:cNvPr\b[^>]*\bname="([^"]+)"/.exec(block);
+    const embedM = /<a:blip\b[^>]*\br:embed="([^"]+)"/.exec(block);
+    if (!nameM || !embedM) return;
+    const id = unescapeXml(nameM[1]);
+    const descrM = /<xdr:cNvPr\b[^>]*\bdescr="([^"]*)"/.exec(block);
+    const target = rels[embedM[1]];
+    if (!target) return;
+    const p = "xl/" + target;
+    const f = files.get(p);
+    if (!f) return;
+    let buffer;
+    try { buffer = f.method === 0 ? f.raw : zlib.inflateRawSync(f.raw); } catch { return; }
+    const m = /\.([A-Za-z0-9]+)$/.exec(p);
+    let ext = m ? m[1].toLowerCase() : "jpg";
+    if (ext === "jpeg") ext = "jpg";
+    out[id] = { id, name: descrM ? unescapeXml(descrM[1]) : "", path: p, ext, size: buffer.length, buffer };
+  });
+  return out;
+}
+
 /* ---------------- 主入口 ---------------- */
 
 /**
@@ -151,7 +196,7 @@ function fmtDateTime(d) {
  * @returns {{ sheets: Array<{name, rows: string[][], rowCount, colCount}>, hasImages, imageCount }}
  *          rows 是二维字符串数组（第 0 行通常是表头）；日期已格式化成 YYYY-MM-DD。
  */
-function readXlsx(buf) {
+function readXlsx(buf, opt = {}) {
   const files = unzip(buf);
 
   // ① 共享字符串表
@@ -268,11 +313,21 @@ function readXlsx(buf) {
     sheets.push({ name: sd.name, rows: grid, rowCount: grid.length, colCount: maxCol });
   });
 
-  const imageCount = [...files.keys()].filter((n) => n.startsWith("xl/media/")).length;
-  return { sheets, hasImages: imageCount > 0, imageCount, fileNames: [...files.keys()] };
+  const mediaFiles = [...files.keys()].filter((n) => n.startsWith("xl/media/") && !n.endsWith("/"));
+  // 只要「单元格图片」的 ID→文件 映射（导入要按 DISPIMG 的 ID 取图）；
+  // 显式传 { images: true } 才把图片字节读进来，免得只想知道结构时白白加载十几 MB
+  const images = opt.images ? readCellImages(files) : {};
+  return {
+    sheets,
+    hasImages: mediaFiles.length > 0,
+    imageCount: mediaFiles.length,
+    cellImageCount: Object.keys(images).length,
+    images,
+    fileNames: [...files.keys()],
+  };
 }
 
-module.exports = { readXlsx, unzip, readEntry, refToCell, serialToDate, fmtDate };
+module.exports = { readXlsx, unzip, readEntry, readCellImages, refToCell, serialToDate, fmtDate };
 
 /* 允许直接命令行调用：node tools/xlsx-read.js <文件> [sheet序号] */
 if (require.main === module) {
