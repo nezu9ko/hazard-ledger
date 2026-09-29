@@ -31,7 +31,7 @@ REM  on port 3000). Only the production checkout owns pgdata (git-ignored).
 if not exist "%APPDIR%\pgdata" (
   echo [ERROR] Refusing to run: this is NOT the production folder.
   echo         %APPDIR%\pgdata not found.
-  echo         Use the dev launcher to (re)start the development server.
+    echo         Use the dev launcher to restart the development server.
   if not "%1"=="nopause" pause
   exit /b 1
 )

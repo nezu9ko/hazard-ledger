@@ -33,10 +33,10 @@ REM  derives its path from %~dp0, running it from a DEV copy would point
 REM  the production task at the dev folder. Only the production checkout
 REM  has pgdata (git-ignored), so use that as the identity marker.
 if not exist "%APPDIR%\pgdata" (
-  echo [ERROR] Refusing to run: this is NOT the production folder.
-  echo         %APPDIR%\pgdata not found.
-  echo         This script only operates on the production copy
-  echo         (the one that owns pgdata and port 3000).
+    echo [ERROR] Refusing to run: this is NOT the production folder.
+    echo         %APPDIR%\pgdata not found.
+    echo         This script only operates on the production copy,
+    echo         i.e. the folder that owns pgdata and port 3000.
   if not "%1"=="nopause" pause
   exit /b 1
 )
