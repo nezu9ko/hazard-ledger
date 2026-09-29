@@ -12,7 +12,11 @@ REM =====================================================================
 
 set "TASK=HazardLedger"
 set "PORT=3000"
-set "LOG=D:\hazard-ledger\app\restart.log"
+REM ★ 不写死盘符路径：用脚本自身所在目录（%~dp0 末尾带反斜杠，故去掉）
+set "APPDIR=%~dp0"
+if "%APPDIR:~-1%"=="\" set "APPDIR=%APPDIR:~0,-1%"
+if "%APPDIR:~-1%"==":" set "APPDIR=%APPDIR%\"
+set "LOG=%APPDIR%\restart.log"
 
 net session >nul 2>&1
 if %errorlevel% neq 0 (

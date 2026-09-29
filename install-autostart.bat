@@ -11,7 +11,11 @@ REM =====================================================================
 
 set "TASK=HazardLedger"
 set "RULE=HazardLedger 3000"
-set "APPDIR=D:\hazard-ledger\app"
+REM ★ 不写死盘符路径：用脚本自身所在目录（%~dp0 末尾带反斜杠，故去掉）
+REM   这样项目整体换位置时，这个脚本一行都不用改。
+set "APPDIR=%~dp0"
+if "%APPDIR:~-1%"=="\" set "APPDIR=%APPDIR:~0,-1%"
+if "%APPDIR:~-1%"==":" set "APPDIR=%APPDIR%\"
 set "RUNNER=%APPDIR%\run-server.bat"
 set "LOG=%APPDIR%\deploy-setup.log"
 

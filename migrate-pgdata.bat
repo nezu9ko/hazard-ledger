@@ -3,6 +3,10 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 REM =====================================================================
+REM  [OBSOLETE / DO NOT RUN] 一次性脚本，2026-09-21 已执行完毕；里面的路径是当时的历史值，
+REM  现在再跑会指向错误位置。需要迁数据目录请用 D:\PostgreSQL\install-service.bat（幂等重建服务）。
+REM  保留本文件仅为记录这次操作做过什么。
+REM
 REM  Migrate the PostgreSQL DATA directory into the hazard project.
 REM    OLD: D:\PostgreSQL\data
 REM    NEW: D:\hazard-ledger\app\pgdata
