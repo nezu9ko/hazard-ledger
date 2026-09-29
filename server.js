@@ -277,7 +277,9 @@ function parsePhotos(raw) {
  * 这是防止"外链文件/路径注入"写入数据库的关键闸门。
  * @param max 每个字段最多保留的个数（默认 6）
  */
-function normalizePhotos(input, max = 6) {
+/** 每个照片字段最多几个附件（与前端 public/script.js 的 MAX_PHOTOS 保持一致） */
+const MAX_PHOTOS = 6;
+function normalizePhotos(input, max = MAX_PHOTOS) {
   if (!Array.isArray(input)) return [];
   const out = [];
   for (const x of input) {
@@ -1137,6 +1139,32 @@ async function handleHazards(req, res, url, id, user) {
 
     // —— 开始整改：由**整改责任人**在此填写整改信息（整改措施/资金/应急预案）——
     // 隐患登记时只填隐患信息，整改信息在真正动手整改时才由责任人补齐。
+    // 后期补附件：隐患照片 / 整改照片都可以登记之后再补
+    // （现实里照片常常是事后才拿到；登记时强制传反而是形式主义）
+    if (body.action === "add-photos") {
+      const field = body.field === "rectifyPhotos" ? "rectifyPhotos" : "hazardPhotos";
+      const col = field === "rectifyPhotos" ? "rectify_photos" : "hazard_photos";
+      const incoming = normalizePhotos(body.photos);
+      if (!incoming.length) return badRequest(res, "没有可添加的附件（只接受本站 /uploads/ 下的文件）");
+
+      const cur = parsePhotos(row[col]);
+      // 去重 + 卡上限，避免重复点按钮灌进来一堆同样的图
+      const seen = new Set(cur.map((x) => x.u));
+      const merged = cur.concat(incoming.filter((x) => !seen.has(x.u)));
+      if (merged.length > MAX_PHOTOS) {
+        return badRequest(res, `最多 ${MAX_PHOTOS} 个附件（当前已有 ${cur.length} 个，本次想加 ${incoming.length} 个）`);
+      }
+      const r = await pool.query(
+        `UPDATE hazard SET ${col} = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
+        [merged.length ? JSON.stringify(merged) : null, id]
+      );
+      await logOp(user, "update_hazard", {
+        targetType: "hazard", targetId: id, targetCode: row.hazard_code,
+        detail: `补充${field === "rectifyPhotos" ? "整改照片" : "隐患照片"} ${incoming.length} 个（共 ${merged.length} 个）`,
+      });
+      return sendJson(res, rowToHazard(r.rows[0], today));
+    }
+
     if (body.action === "start-rectify") {
       // 权限：**只有被指定的整改责任人本人**可填；系统管理员可代办（应急）。
       // 其他安全管理员一律不行 —— 做到"谁整改、谁填写"。

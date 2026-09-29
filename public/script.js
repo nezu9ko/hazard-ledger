@@ -478,17 +478,74 @@ function initPhotoUploader(key) {
   return state;
 }
 
-/** 详情页附件展示（兼容旧数据里的纯字符串） */
-  function photoViewer(label, urls) {
-    // 统一走 attOf()：附件可能是 {u,n} 对象，也可能是旧的纯字符串
-    const list = (Array.isArray(urls) ? urls : []).map(attOf).filter((a) => a.u);
+/**
+ * 详情页附件展示（兼容旧数据里的纯字符串）。
+ * @param field 传 "hazardPhotos" / "rectifyPhotos" 时，下方会**一直显示**「添加图片」按钮，
+ *              用于登记之后再补照片（照片常常是事后才拿到的，不该逼着登记时就传）。
+ */
+function photoViewer(label, urls, field) {
+  // 统一走 attOf()：附件可能是 {u,n} 对象，也可能是旧的纯字符串
+  const list = (Array.isArray(urls) ? urls : []).map(attOf).filter((a) => a.u);
+  const key = field ? "pv-" + field : "";
+  const grid = list.length
+    ? `<div class="photo-grid" id="${key}Grid">${list.map((a) => (isImageUrl(a.u)
+      ? `<div class="photo-item"><img src="${esc(a.u)}" alt="" data-preview="${esc(a.u)}"></div>`
+      : `<div class="photo-item doc" data-doc="${esc(a.u)}" title="${esc(a.n || "点击打开")}"><span class="doc-ext">${esc(extOf(a.u).toUpperCase())}</span></div>`
+    )).join("")}</div>`
+    : `<div class="photo-grid" id="${key}Grid"></div><span class="photo-none" id="${key}None">暂无附件</span>`;
+
+  const adder = field ? `
+    <div class="photo-add">
+      <button type="button" class="btn btn-outline btn-sm" id="${key}Add">${icon("plus", 13)}添加图片</button>
+      <span class="photo-add-hint">可随时补充，最多 ${MAX_PHOTOS} 个（当前 <b id="${key}Count">${list.length}</b> 个）</span>
+      <input type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" multiple id="${key}Input" style="display:none">
+    </div>` : "";
+
   return `<div class="info-item full"><div class="i-label">${esc(label)}</div>
-    <div class="i-value">${list.length
-      ? `<div class="photo-grid">${list.map((a) => (isImageUrl(a.u)
-        ? `<div class="photo-item"><img src="${esc(a.u)}" alt="" data-preview="${esc(a.u)}"></div>`
-        : `<div class="photo-item doc" data-doc="${esc(a.u)}" title="${esc(a.n || "点击打开")}"><span class="doc-ext">${esc(extOf(a.u).toUpperCase())}</span></div>`
-      )).join("")}</div>`
-      : "—"}</div></div>`;
+    <div class="i-value">${grid}${adder}</div></div>`;
+}
+
+/**
+ * 给某个附件区挂上「添加图片」：选文件 → 压缩上传 → 追加到该隐患的对应字段 → 重渲染详情。
+ * 之所以放在详情页而不是只在登记/整改弹窗里：照片往往是**事后**才拿到的。
+ */
+function bindPhotoAdder(payloadField, hazardId) {
+  const key = "pv-" + payloadField;
+  const btn = $("#" + key + "Add");
+  const input = $("#" + key + "Input");
+  if (!btn || !input) return;
+  btn.onclick = () => input.click();
+  input.onchange = async () => {
+    const files = [...input.files];
+    input.value = "";
+    if (!files.length) return;
+    const photos = [];
+    const old = btn.innerHTML;
+    for (let i = 0; i < files.length; i += 1) {
+      const f = files[i];
+      const isImg = f.type.startsWith("image/");
+      if (!isImg && !DOC_TYPES.includes(f.type)) { toast("不支持的文件类型", f.name, "err"); continue; }
+      const limit = isImg ? 8 : 20;
+      if (f.size > limit * 1024 * 1024) { toast("文件过大", `${f.name} 超过 ${limit}MB`, "err"); continue; }
+      btn.disabled = true; btn.textContent = `上传中 ${i + 1}/${files.length}...`;
+      try {
+        const dataUrl = isImg ? await compressImage(f) : await readAsDataUrl(f);
+        const r = await api.post("/upload", { name: f.name, dataUrl });
+        photos.push({ u: r.url, n: f.name });
+      } catch (err) {
+        toast("上传失败", `${f.name}：${err.message}`, "err");
+      }
+    }
+    btn.disabled = false; btn.innerHTML = old;
+    if (!photos.length) return;
+    try {
+      await api.patch("/hazards/" + hazardId, { action: "add-photos", field: payloadField, photos });
+      toast("已添加", `补充了 ${photos.length} 个附件`, "ok");
+      renderHazardDetail(hazardId);
+    } catch (err) {
+      toast("添加失败", err.message, "err", 6000);
+    }
+  };
 }
 
 /* ---------- 图标 ---------- */
@@ -1994,7 +2051,7 @@ async function renderHazardDetail(id) {
         <div class="info-item"><div class="i-label">隐患等级</div><div class="i-value"><span class="badge lv-${h.level}">${esc(LEVEL_LABELS[h.level])}</span></div></div>
         ${infoRow("登记时间", fmtDateTime(h.createdAt))}
         <div class="info-item full"><div class="i-label">隐患描述</div><div class="i-value pre">${esc(h.description)}</div></div>
-        ${photoViewer("隐患照片", h.hazardPhotos)}
+        ${photoViewer("隐患照片", h.hazardPhotos, "hazardPhotos")}
       </div>
     </div>
     <div class="card card-pad">
@@ -2003,7 +2060,7 @@ async function renderHazardDetail(id) {
       <div class="info-grid">
         ${infoRow("整改责任人", h.rectifyPerson)}${infoRow("整改资金（元）", h.rectifyFund)}${infoRow("计划完成时限", h.planDeadline)}
         <div class="info-item full"><div class="i-label">应急预案</div><div class="i-value pre">${esc(h.emergencyPlan || "无")}</div></div>
-        ${photoViewer("整改照片", h.rectifyPhotos)}
+        ${photoViewer("整改照片", h.rectifyPhotos, "rectifyPhotos")}
       </div>
     </div>
     <div class="card card-pad">
@@ -2031,6 +2088,8 @@ async function renderHazardDetail(id) {
   </div>`;
 
   $("#backBtn").onclick = () => history.back();
+  bindPhotoAdder("hazardPhotos", id);
+  bindPhotoAdder("rectifyPhotos", id);
   const bpd = $("#btnPrintDetail");
   if (bpd) {
     bpd.onclick = () => {

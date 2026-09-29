@@ -392,6 +392,15 @@ table.tbl { width: 100%; border-collapse: collapse; min-width: 1040px; font-size
 .role-user { background: #f3f4f6; color: #4b5563; border-color: #e5e7eb; }
 .role-admin { background: #ede9fe; color: #6d28d9; border-color: #ddd6fe; }
 
+/* ---------- 详情页「添加图片」入口（常驻） ---------- */
+.photo-add {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 12px; border-top: 1px dashed #e5e7eb;
+}
+.photo-add-hint { font-size: 12px; color: var(--text-light); }
+.photo-add-hint b { color: var(--text-muted); font-weight: 500; }
+.photo-none { font-size: 12.5px; color: var(--text-light); }
+
 /* ---------- 部门管理（用户管理页） ---------- */
 .dept-list { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
 .dept-chip {
