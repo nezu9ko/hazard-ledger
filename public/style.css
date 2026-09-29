@@ -429,6 +429,9 @@ table.tbl { width: 100%; border-collapse: collapse; min-width: 1040px; font-size
   background: #fff; border-radius: 14px; width: 100%; max-width: 440px;
   box-shadow: var(--shadow-lg); max-height: 90vh; overflow-y: auto;
 }
+/* 宽弹窗：导入预览这类要摊开一张多列表格的场景 */
+.modal.modal-wide { max-width: 1100px; }
+@media (max-width: 760px) { .modal.modal-wide { max-width: 96vw; } }
 .modal-head { padding: 20px 22px 6px; }
 .modal-head h3 { font-size: 17px; font-weight: 600; }
 .modal-head p { font-size: 13px; color: var(--text-muted); margin-top: 4px; }

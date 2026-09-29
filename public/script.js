@@ -507,6 +507,7 @@ const ICONS = {
   calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
   fileText: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
   play: '<polygon points="5 3 19 12 5 21 5 3"/>',
   printer: '<polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>',
   user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
@@ -522,6 +523,7 @@ const ACTION_LABELS = {
   review_hazard: "复查闭环",
   delete_hazard: "删除隐患",
   export_hazard: "导出隐患台账",
+  import_hazard: "导入隐患台账",
   create_user: "新增用户",
   update_user_role: "修改角色",
   reset_password: "重置密码",
@@ -551,11 +553,11 @@ function showPrintHintOnce() {
   }, 600);
 }
 
-  function openModal({ title, desc, bodyHtml, confirmText = "确认", cancelText = "取消", danger = false, dismissable = true, onConfirm, onCancel }) {
+  function openModal({ title, desc, bodyHtml, confirmText = "确认", cancelText = "取消", danger = false, dismissable = true, wide = false, onConfirm, onCancel }) {
     const overlay = document.createElement("div");
     overlay.className = "overlay";
     overlay.innerHTML = `
-      <div class="modal">
+      <div class="modal${wide ? " modal-wide" : ""}">
         <div class="modal-head"><h3>${esc(title)}</h3>${desc ? `<p>${esc(desc)}</p>` : ""}</div>
         <div class="modal-body">${bodyHtml}</div>
         <div class="modal-foot">
@@ -1173,6 +1175,123 @@ function openExportMenu(anchor, getIds) {
   });
 }
 
+/* ---------- 台账导入 ---------- */
+
+/** File → dataURL（给后端当 base64 传） */
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || ""));
+    fr.onerror = () => reject(new Error("读取文件失败"));
+    fr.readAsDataURL(file);
+  });
+}
+
+/**
+ * 导入预览弹窗。
+ * 为什么要预览：导入是**批量写库**，选错文件/选错 sheet 就是一片脏数据。
+ * 预览里把"将要发生的每一件事"摊开给用户看，确认后才写。
+ */
+function openImportPreview(file, dataUrl, pv) {
+  const cell = (t) => `<td style="padding:4px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top">${t}</td>`;
+  const rows = pv.preview.map((p) => {
+    const okSign = p.action === "create" ? '<span style="color:#16a34a">✓</span>' : '<span style="color:#9ca3af">—</span>';
+    return `<tr>
+      ${cell(`<span style="color:#9ca3af">${p.rowNo}</span>`)}
+      ${cell(okSign)}
+      ${cell(esc(p.inspectDate || "—"))}
+      ${cell(esc(p.location || "—"))}
+      ${cell(`<div style="max-width:320px">${esc(p.description)}</div>`)}
+      ${cell(`<span class="badge lv-${p.level}">${esc(LEVEL_LABELS[p.level] || p.level)}</span>`)}
+      ${cell(`${esc(CATEGORY_LABELS[p.category] || p.category)}${p.categoryGuessed ? '<span style="color:#9ca3af;font-size:12px"> (按描述推断)</span>' : ""}`)}
+      ${cell(esc(p.rectifyPerson || "—") + (p.linkedUser ? "" : '<span style="color:#d97706;font-size:12px"> (无账号)</span>'))}
+      ${cell(esc(p.planDeadline || "—"))}
+      ${cell(p.issues.length ? `<span style="color:#d97706">${esc(p.issues.join("；"))}</span>` : '<span style="color:#9ca3af">—</span>')}
+    </tr>`;
+  }).join("");
+
+  const overlay = openModal({
+    title: "导入预览",
+    wide: true,
+    desc: `文件：${file.name}　数据表：${pv.file.sheetName}（表头第 ${pv.file.headerRow} 行）`,
+    bodyHtml: `
+      <div class="info-grid cols-4" style="margin-bottom:14px">
+        <div class="info-item"><div class="i-label">解析到</div><div class="i-value">${pv.total} 条</div></div>
+        <div class="info-item"><div class="i-label">可导入</div><div class="i-value" style="color:#16a34a">${pv.creatable} 条</div></div>
+        <div class="info-item"><div class="i-label">重复跳过</div><div class="i-value">${pv.duplicated} 条</div></div>
+        <div class="info-item"><div class="i-label">有问题</div><div class="i-value" style="color:${pv.problematic ? "#d97706" : "#16a34a"}">${pv.problematic} 条</div></div>
+      </div>
+      ${pv.notes.length ? `<div class="callout-info" style="margin-bottom:14px">
+        ${icon("info", 15)}<div>${pv.notes.map(esc).join("<br>")}</div></div>` : ""}
+      ${pv.willCreateUsers.length ? `<div class="callout-info" style="margin-bottom:14px;background:#fff7ed;border-color:#fed7aa">
+        ${icon("userPlus", 15)}<div>将自动新建 ${pv.willCreateUsers.length} 个账号：<strong>${pv.willCreateUsers.map(esc).join("、")}</strong>
+        （初始密码 123456，首次登录强制改密）</div></div>` : ""}
+      <div class="field" style="margin-bottom:12px"><label>统一指定复查人（原表没填复查人的，都用这位）</label>
+        ${pickerHtml("importReviewer", "请选择复查人员")}
+        <div class="picker-name-hint" id="importReviewerHint" style="font-size:12px;color:#9ca3af;margin-top:4px">默认取当前登录人</div>
+      </div>
+      <div style="max-height:320px;overflow:auto;border:1px solid #f1f5f9;border-radius:8px">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="background:#f8fafc;position:sticky;top:0">
+            <th style="padding:6px 8px;text-align:left">行</th><th></th>
+            <th style="padding:6px 8px;text-align:left">排查日期</th>
+            <th style="padding:6px 8px;text-align:left">部位</th>
+            <th style="padding:6px 8px;text-align:left">隐患描述</th>
+            <th style="padding:6px 8px;text-align:left">等级</th>
+            <th style="padding:6px 8px;text-align:left">类别</th>
+            <th style="padding:6px 8px;text-align:left">整改责任人</th>
+            <th style="padding:6px 8px;text-align:left">时限</th>
+            <th style="padding:6px 8px;text-align:left">提示</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="err-text" id="importErr" style="display:none;margin-top:12px"></div>`,
+    confirmText: pv.creatable ? `确认导入 ${pv.creatable} 条` : "无可导入数据",
+    onConfirm: async (ov) => {
+      const errEl = $("#importErr", ov);
+      const reviewer = pickerName("#importReviewer");
+      if (pv.creatable === 0) { errEl.textContent = "没有可导入的数据"; errEl.style.display = "block"; return false; }
+      if (!reviewer) { errEl.textContent = "请先选择「复查人」—— 原表没填复查人，需要在这里统一指定一位"; errEl.style.display = "block"; return false; }
+      try {
+        const r = await api.post("/import", {
+          fileName: file.name, dataUrl, commit: true,
+          options: { reviewer, createMissingUsers: true, newUserDepartment: "安全部" },
+        });
+        toast("导入完成", `新增 ${r.created} 条${r.usersCreated.length ? `，新建用户 ${r.usersCreated.length} 个` : ""}${r.skipped ? `，跳过 ${r.skipped} 条` : ""}`, "ok", 6000);
+        if (r.errors && r.errors.length) {
+          toast("部分行未导入", `${r.errors.length} 条失败，详见操作日志`, "err", 6000);
+        }
+        listState.page = 1;
+        loadList();
+      } catch (err) {
+        errEl.textContent = err.message; errEl.style.display = "block"; return false;
+      }
+    },
+  });
+
+  // 复查人选择器：预选"文件里已有的复查人"；文件里没有时用当前登录人，
+  // **但当前登录人是 admin 就不预选** —— admin 是系统账号，不该当经办人；
+  // 首屏空着，逼用户明确选一个（下面 onConfirm 会校验非空）。
+  const withReviewer = (pv.preview || []).find((p) => p.reviewer);
+  const me = currentUser();
+  const meIsAdmin = me && me.role === "admin";
+  const preset = (withReviewer && withReviewer.reviewer) || (!meIsAdmin && me ? me.userName : "");
+  const fillImportReviewer = (items, keep) => fillUserPicker("#importReviewer", items, {
+    valueKey: "name", placeholder: "请选择复查人员（必须选一位）",
+    current: keep ? { id: "", userName: keep, department: "" } : null,
+    currentDept: "当前指定", value: keep, name: keep,
+  });
+  fillImportReviewer([], preset);
+  // 先给占位、再异步换成真实名单，避免弹窗卡顿
+  api.get("/user-options").then((r) => {
+    const keep = pickerName("#importReviewer") || preset;
+    fillImportReviewer(r.items || [], keep);
+  }).catch(() => { /* 拿不到名单也不影响手输，onConfirm 会校验 */ });
+  setTimeout(() => { const p = $("#importReviewer"); if (p && !p.closest(".picker").querySelector(".picker-text").textContent.trim()) p.closest(".picker").querySelector(".picker-text").textContent = "请选择复查人员（必须选一位）"; }, 0);
+  void overlay;
+}
+
 async function renderHazardList() {
   $("#app").innerHTML = layout("hazards", `
     <div class="page">
@@ -1181,6 +1300,8 @@ async function renderHazardList() {
         <div style="display:flex;gap:10px">
           <button class="btn btn-outline" id="btnPrint">${icon("printer")}打印</button>
           <button class="btn btn-outline" id="btnExport">${icon("download")}导出表单</button>
+          ${isAdmin() ? `<button class="btn btn-outline" id="btnImport">${icon("upload")}导入台账</button>
+          <input type="file" id="importFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none">` : ""}
           <a class="btn btn-primary" href="#/hazards/new">${icon("plus")}新增隐患</a>
         </div>
       </div>
@@ -1214,6 +1335,30 @@ async function renderHazardList() {
 
   // 导出：点一下弹出格式菜单（三套纸质表单 + 扁平明细），按当前筛选条件导出
   $("#btnExport").onclick = () => openExportMenu($("#btnExport"), () => null);
+
+  // 导入台账（仅管理员）：选文件 → 先预览（不写库）→ 确认后才真正导入
+  if (isAdmin() && $("#btnImport")) {
+    const fileInput = $("#importFile");
+    $("#btnImport").onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      const f = fileInput.files && fileInput.files[0];
+      fileInput.value = "";                       // 允许连续选同一个文件
+      if (!f) return;
+      if (!/\.xlsx$/i.test(f.name)) { toast("文件类型不对", "只支持 .xlsx；老式 .xls 请先用 Excel 另存为 .xlsx", "err"); return; }
+      if (f.size > 20 * 1024 * 1024) { toast("文件过大", "上限 20MB", "err"); return; }
+      const btn = $("#btnImport"); const old = btn.innerHTML;
+      btn.disabled = true; btn.textContent = "读取中...";
+      try {
+        const dataUrl = await fileToDataUrl(f);
+        const preview = await api.post("/import", { fileName: f.name, dataUrl, commit: false, options: { createMissingUsers: true, newUserDepartment: "安全部" } });
+        openImportPreview(f, dataUrl, preview);
+      } catch (err) {
+        toast("读取失败", err.message, "err");
+      } finally {
+        btn.disabled = false; btn.innerHTML = old;
+      }
+    };
+  }
 
   $("#btnQuery").onclick = () => {
     listState.level = $("#fLevel").value; listState.category = $("#fCategory").value;
