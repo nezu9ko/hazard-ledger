@@ -31,7 +31,16 @@ if defined LISTENING (
   exit /b 0
 )
 
-echo [%date% %time%] port %PORT% was NOT listening - starting the server >> "%LOG%"
+REM Locale-neutral timestamp: %date% embeds the weekday in the system
+REM language, which would write non-ASCII bytes into the log.
+set "TS="
+for /f "delims=" %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HH:mm:ss" 2^>nul') do set "TS=%%t"
+if not defined TS set "TS=unknown-time"
+
+echo [%TS%] port %PORT% was NOT listening - starting the server >> "%LOG%"
 call "%APPDIR%\run-server.bat"
-echo [%date% %time%] server process exited >> "%LOG%"
+set "TS2="
+for /f "delims=" %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HH:mm:ss" 2^>nul') do set "TS2=%%t"
+if not defined TS2 set "TS2=unknown-time"
+echo [%TS2%] server process exited >> "%LOG%"
 exit /b 0
