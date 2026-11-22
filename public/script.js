@@ -41,6 +41,18 @@ const CATEGORY_LABELS = {
 };
 const LEVEL_LABELS = { major: "重大", general: "一般" };
 const STATUS_LABELS = { pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
+
+/** 列表/详情用的状态文字。
+ *  「逾期」是派生状态（未闭环且过期），它会把真实的 pending / rectifying 盖掉，
+ *  所以逾期时把底层状态也带上 —— 否则"整改中但已逾期"的记录只会显示"逾期"，
+ *  看不出它其实已经进入整改流程了。 */
+function statusText(h) {
+  if (h.status === "overdue") {
+    const base = h.baseStatus || "pending";
+    return `${STATUS_LABELS[base] || base} · 逾期`;
+  }
+  return STATUS_LABELS[h.status] || h.status;
+}
 /* 列表「状态」筛选只有四种口径（不是流程状态，别混）：
  *   已整改 = closed ／ 未整改 = 非 closed ／ 逾期 = 非 closed 且过了计划时限
  * value 沿用后端的 closed / unclosed / overdue，改的只是显示文案 */
@@ -1550,7 +1562,7 @@ async function loadList() {
       <td class="desc" title="${esc(h.description)}">${esc(h.description)}</td>
       <td>${esc(CATEGORY_LABELS[h.category] || h.category)}</td>
       <td><span class="badge lv-${h.level}">${esc(LEVEL_LABELS[h.level] || h.level)}</span></td>
-      <td><span class="badge st-${h.status}">${esc(STATUS_LABELS[h.status] || h.status)}</span></td>
+      <td><span class="badge st-${h.status}">${esc(statusText(h))}</span></td>
       <td>${esc(h.rectifyPerson)}</td>
       <td>${esc(h.planDeadline)}</td>
       <td style="white-space:nowrap"><span class="btn-link">查看</span>${isAdmin() ? ` <button class="btn-link" style="color:#dc2626" data-del="${h.id}" data-code="${esc(h.hazardCode)}">删除</button>` : ""}</td>
@@ -2090,7 +2102,8 @@ const INLINE_FIELDS = {
   reviewResult: { type: "textarea" },
   actualCompleteDate: { type: "date" },
   closedAt: { type: "datetime" },
-  status: { type: "select", map: () => STATUS_LABELS },
+  // 只列数据库真正支持的三种；overdue 是派生状态，写进去后端会拒绝
+  status: { type: "select", map: () => ({ pending: "待整改", rectifying: "整改中", closed: "已闭环" }) },
 };
 
 /** ISO 时间 → datetime-local 需要的 "YYYY-MM-DDTHH:mm" */
@@ -2275,7 +2288,7 @@ async function renderHazardDetail(id) {
         <div class="page-title">${esc(h.hazardCode)}</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px">
-        <span class="badge st-${h.status}${isAdmin() ? " is-editable" : ""}" style="padding:5px 12px"${isAdmin() ? ` data-edit-field="status" data-edit-value="${h.status}" title="点击修改状态"` : ""}>${esc(STATUS_LABELS[h.status])}</span>
+        <span class="badge st-${h.status}${isAdmin() ? " is-editable" : ""}" style="padding:5px 12px"${isAdmin() ? ` data-edit-field="status" data-edit-value="${h.baseStatus || h.status}" title="点击修改状态"` : ""}>${esc(statusText(h))}</span>
         <button class="btn btn-outline" id="btnPrintDetail">${icon("printer")}打印</button>
       </div>
     </div>
@@ -2309,7 +2322,7 @@ async function renderHazardDetail(id) {
           <div class="info-item full"><div class="i-label">复查结果</div><div class="i-value pre${isAdmin() ? " is-editable" : ""}"${isAdmin() ? ` data-edit-field="reviewResult" data-edit-value="${esc(h.reviewResult || "")}" title="点击编辑"` : ""}>${esc(h.reviewResult)}</div></div>
         </div>
         <div class="closed-note">${icon("check", 18)}已闭环</div>`
-      : h.status === "rectifying" ? `
+      : (h.baseStatus || h.status) === "rectifying" ? `
         <div class="rectify-banner">${icon("clock", 18)}该隐患正在整改中，整改责任人：${esc(h.rectifyPerson)}</div>
         ${canReview ? reviewForm : `<div class="empty"><div class="e-title">整改中</div><div class="e-sub">等待复查人员复查闭环</div></div>`}`
       : `
