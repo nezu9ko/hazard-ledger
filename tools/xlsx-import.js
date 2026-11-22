@@ -17,8 +17,10 @@ const { readXlsx } = require("./xlsx-read");
 
 /** 字段 → 可能的表头写法（按优先级；先精确匹配，再包含匹配） */
 const COL_HINTS = {
-  // 「日期」放最后：它有被「检查日期」「整改完成时间」抢走的风险，只在不冲突时生效
-  inspectDate: ["检查时间", "排查日期", "检查日期", "排查时间", "检查日"],
+  // 「日期」放最后：它有被「检查日期」「整改完成时间」抢走的风险，只在不冲突时生效。
+  //   公司现行的《整改通知单》里，日期列的表头就写作「日期」（在「原始检查记录」表里），
+  //   不加这个词整批数据都识别不到排查日期，进而连带「整改期限=3天」也换算不出来。
+  inspectDate: ["检查时间", "排查日期", "检查日期", "排查时间", "检查日", "日期"],
   inspector: ["检查人", "排查人员", "排查人"],
   location: ["具体地点", "检查部位", "所在部位", "部位", "地点", "位置"],
   description: ["存在隐患或问题", "存在的问题或隐患", "现场具体隐患", "具体隐患", "隐患描述", "问题或隐患", "隐患内容", "存在问题", "描述"],
@@ -61,7 +63,12 @@ function mapColumns(headerCells) {
   const cols = {};
   const used = new Set();
   const assign = (exact) => {
-    Object.entries(COL_HINTS).forEach(([field, hints]) => {
+    let entries = Object.entries(COL_HINTS);
+    // 包含轮里「日期」的杀伤面太大（会命中「完成日期」「复查日期」等更具体的列），
+    // 让 inspectDate 最后再认，前面更具体的字段先占位。
+    //   注意：sort 在 V8 里是稳定的，只会把 inspectDate 挪到末尾，其余顺序不变。
+    if (!exact) entries = entries.slice().sort((a, b) => (a[0] === "inspectDate" ? 1 : 0) - (b[0] === "inspectDate" ? 1 : 0));
+    entries.forEach(([field, hints]) => {
       if (cols[field] !== undefined) return;
       const ordered = hints.map(norm);
       const idx = cells.findIndex((c, i) => c && !used.has(i) && (exact ? ordered.includes(c) : ordered.some((h) => c.includes(h))));
@@ -131,6 +138,41 @@ function normDate(v) {
   return "";
 }
 const isDateStr = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(new Date(s + "T00:00:00Z").getTime());
+
+/** 描述归一化：跨表补齐时容忍「未悬挂…」与「悬挂…」这类否定词差异。
+ *  只做「去标点 + 去否定词」，不做同义替换 —— 宁可补不上，也不能错补到别的隐患上。 */
+function descKey(s) {
+  return String(s || "")
+    .replace(/[\s，,。.；;：:、（）()【】“”"'‘’]/g, "")
+    .replace(/缺少|没有|存在|未|无/g, "");
+}
+
+/** 天数解析：兼容「3」「3天」「3日」「三天」这些写法。
+ *  公司通知单的「整改期限」列填的就是「3天」，早先直接 Number() 会得到 NaN，
+ *  导致整批数据换算不出计划完成时限。 */
+const CN_NUM = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+function parseDays(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return NaN;
+  const n = Number(s);
+  if (Number.isFinite(n)) return n;
+  const m = /^([一二两三四五六七八九十]|\d+)\s*[天日]?$/.exec(s);
+  if (!m) return NaN;
+  return CN_NUM[m[1]] || Number(m[1]);
+}
+
+/** 金额归一：表里可能写「50元」「1,000」「/」「—」，统一成纯数字（认不出记 0）。
+ *  数据库 rectify_fund 是 numeric 类型，直接把「50元」传下去会报
+ *  invalid input syntax for type numeric，整条记录都写不进去。 */
+function parseMoney(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return 0;
+  const cleaned = s.replace(/[,，\s]/g, "").replace(/[元块圆]$/, "");
+  if (!cleaned || /^[/—\-－.]+$/.test(cleaned)) return 0;
+  const m = /(\d+(?:\.\d+)?)/.exec(cleaned);
+  return m ? Number(m[1]) : 0;
+}
+
 const addDays = (dateStr, n) => {
   const d = new Date(dateStr + "T00:00:00Z");
   d.setUTCDate(d.getUTCDate() + n);
@@ -143,7 +185,16 @@ const addDays = (dateStr, n) => {
  * @param {Buffer} buf  xlsx 文件内容
  * @returns {Object} 解析结果（明细见文件末尾 README 注释）
  */
-function parseHazardWorkbook(buf) {
+/**
+ * @param {Buffer} buf
+ * @param {{inspectDate?: string}} [opts]
+ *   inspectDate —— 整表统一的排查日期兜底。同一份《整改通知单》里的隐患都是同一天查的，
+ *   但表里可能只在正文或别的 sheet 里写了日期，甚至有 2~3 行因描述改写而对不上。
+ *   传了它，凡是识别不到日期的行都用这个值，计划完成时限也随之能按「3天」换算出来。
+ */
+function parseHazardWorkbook(buf, opts) {
+  const o = opts || {};
+  const fallbackDate = normDate(o.inspectDate || "");
   // images: true —— 顺带把 WPS 嵌入的单元格图片字节读出来（导入时要存进 uploads/）
   const book = readXlsx(buf, { images: true });
   const notes = [];
@@ -206,6 +257,13 @@ function parseHazardWorkbook(buf) {
         const desc = String(row[donor.cols[KEY_FIELD]] || "").trim();
         if (!desc) return;
         const rec = supp[desc] = supp[desc] || {};
+        // 模糊索引：容忍人工录入时「未悬挂…」与「悬挂…」这类一字之差。
+        //   同一个归一化 key 对上多条不同描述时标记为冲突并弃用 —— 宁可不补，也不能错补。
+        const fk = "\u0000" + descKey(desc);
+        if (fk !== "\u0000") {
+          if (supp[fk] === undefined) supp[fk] = rec;
+          else if (supp[fk] !== rec) supp[fk] = null;
+        }
         missing.forEach((f) => {
           if (donor.cols[f] === undefined || rec[f]) return;
           const v = String(row[donor.cols[f]] == null ? "" : row[donor.cols[f]]).trim();
@@ -217,7 +275,7 @@ function parseHazardWorkbook(buf) {
     if (donors.length) {
       notes.push(`主表缺 ${missing.length} 个字段（${missing.join("、")}），已从 ${donors.join("、")} 按隐患描述逐条补齐。`);
     }
-    const stillMissing = missing.filter((f) => !Object.values(supp).some((r) => r[f]));
+    const stillMissing = missing.filter((f) => !Object.values(supp).some((r) => r && r[f]));
     if (stillMissing.length) notes.push(`⚠️ 这些字段在所有表里都找不到，需要导入后手工补：${stillMissing.join("、")}`);
   }
 
@@ -227,19 +285,20 @@ function parseHazardWorkbook(buf) {
     const row = primary.sheet.rows[r] || [];
     const desc0 = String(row[primary.cols[KEY_FIELD]] || "").trim();
     /** 取值：主表有就用主表的，主表没有/为空就查补齐索引 */
+    // 先按描述原文精确找；找不到再按归一化后的描述找（容忍「未悬挂」/「悬挂」这类差异）
+    const rec = supp[desc0] || supp["\u0000" + descKey(desc0)] || {};
     const raw = (f) => {
       if (primary.cols[f] !== undefined) {
         const v = String(row[primary.cols[f]] == null ? "" : row[primary.cols[f]]).trim();
         if (v) return v;
       }
-      const rec = supp[desc0] || {};
       return rec[f] ? String(rec[f]).trim() : "";
     };
     const problems = [];
 
     const description = desc0;
     const location = raw("location");
-    const inspectDate = normDate(raw("inspectDate"));
+    const inspectDate = normDate(raw("inspectDate")) || fallbackDate;
 
     // 等级 / 类别：同一列文字可能填等级（一般/重大）也可能填类别（设备设施/违章行为…）
     const lcText = raw("levelOrCategory");
@@ -254,13 +313,15 @@ function parseHazardWorkbook(buf) {
     let planDeadline = normDate(raw("planDeadline"));
     let limitDaysNote = "";
     if (!planDeadline) {
-      const days = Number(raw("planDeadline"));
+      const days = parseDays(raw("planDeadline"));
       if (Number.isFinite(days) && days > 0 && isDateStr(inspectDate)) {
         planDeadline = addDays(inspectDate, days);
         limitDaysNote = `时限列是「${days}」（天数），按排查日期+${days}天换算为 ${planDeadline}`;
       }
     }
-    // 最后兜底：有些表把计划日期写在「复查时间」列
+    // 最后兜底：有些表把计划日期写在「复查时间」列。
+    //   ⚠️ 这个兜底只在时限列完全给不出值时生效；若「复查时间」其实是复查日期，
+    //   会得到一个偏晚的"计划时限"。所以上面必须先能解析「3天」这类相对期限。
     if (!planDeadline) planDeadline = normDate(raw("reviewDate"));
 
     if (!inspectDate) problems.push("没有可识别的排查日期");
@@ -274,6 +335,15 @@ function parseHazardWorkbook(buf) {
     // 也可能干脏写了个文件名/路径 —— 只处理前者，后者留个提示别静默丢掉
     const photoRaw = raw("photos");
     const photoIds = dispImgIds(photoRaw).filter((id) => book.images[id]);
+
+    // 浮动图片（公司通知单里的照片是直接插在表上的，不是 DISPIMG 公式）：
+    // 按锚点所在行归属到本条记录，塞进 book.images 后与嵌入图走同一套存图逻辑。
+    (primary.sheet.images || []).forEach((im, k) => {
+      if (im.row + 1 !== r + 1) return;
+      const id = `__draw_${r}_${k}`;
+      book.images[id] = { id, name: im.name || "", ext: im.ext, size: im.buffer.length, buffer: im.buffer };
+      photoIds.push(id);
+    });
     const photos = photoIds.map((id) => {
       const im = book.images[id];
       return { id, name: im.name || "", ext: im.ext, size: im.size,
@@ -304,10 +374,13 @@ function parseHazardWorkbook(buf) {
       levelOrCategoryText: lcText,
       rectifyMeasure: raw("rectifyMeasure"),
       rectifyPerson: raw("rectifyPerson"),
-      rectifyFund: raw("rectifyFund") || "0",
+      rectifyFund: parseMoney(raw("rectifyFund")),
       planDeadline,
       reviewer: raw("reviewer"),
       reviewResult: raw("reviewResult"),
+      // 复查日期必须带出来：已闭环的记录要用表里"哪天复查的"，
+      // 否则导入时会被兜底成"导入当天"，台账上的验收时间就全错了
+      reviewDate: normDate(raw("reviewDate")),
       actualCompleteDate: normDate(raw("actualCompleteDate")),
       note: limitDaysNote,
       _problems: problems,

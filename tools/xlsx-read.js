@@ -189,6 +189,88 @@ function readCellImages(files) {
   return out;
 }
 
+/** 把 OPC 里的相对路径（可能带 ../）解析成 zip 内的绝对条目名 */
+function resolvePartPath(baseDir, target) {
+  if (!target) return "";
+  const t = String(target).replace(/^\/+/, "");
+  const parts = (t.startsWith("xl/") ? t : baseDir + t).split("/");
+  const out = [];
+  for (const p of parts) {
+    if (p === "..") out.pop();
+    else if (p !== "." && p !== "") out.push(p);
+  }
+  return out.join("/");
+}
+
+/**
+ * 读「浮在单元格上方的图片」。
+ *
+ * 与 readCellImages 的区别：
+ *   - readCellImages 读的是 `xl/cellimages.xml`，那是 WPS「嵌入单元格图片」（=DISPIMG 公式）的图库；
+ *   - 公司这些《整改通知单》里的现场照片是**直接插在表格上的浮动图片**，存在 drawing 里，
+ *     只能靠锚点（anchor）的 from/to 行列算出它盖在哪个单元格上。
+ *
+ * 返回 [{ row, rowFrom, rowTo, buffer, ext, name }]，row 为 0 基行号（取图片纵向中心）。
+ */
+function readDrawingImages(files, sheetPath) {
+  if (!sheetPath) return [];
+  const sheetDir = sheetPath.replace(/[^/]+$/, "");
+  const sheetFile = sheetPath.split("/").pop();
+  const relXml = readEntry(files, sheetDir + "_rels/" + sheetFile + ".rels");
+  if (!relXml) return [];
+
+  let drawingPath = "";
+  eachElement(relXml, "Relationship", (a) => {
+    const at = attrs(`<x ${a}>`);
+    if (at.Type && at.Type.includes("/drawing") && at.Target) drawingPath = resolvePartPath(sheetDir, at.Target);
+  });
+  if (!drawingPath) return [];
+  const xml = readEntry(files, drawingPath);
+  if (!xml) return [];
+
+  const dDir = drawingPath.replace(/[^/]+$/, "");
+  const dRel = readEntry(files, dDir + "_rels/" + drawingPath.split("/").pop() + ".rels");
+  const ridMap = {};
+  if (dRel) {
+    eachElement(dRel, "Relationship", (a) => {
+      const at = attrs(`<x ${a}>`);
+      if (at.Id && at.Target) ridMap[at.Id] = resolvePartPath(dDir, at.Target);
+    });
+  }
+
+  const out = [];
+  const re = /<xdr:(twoCellAnchor|oneCellAnchor)\b[\s\S]*?<\/xdr:\1>/g;
+  let m;
+  while ((m = re.exec(xml))) {
+    const block = m[0];
+    const fromRowM = /<xdr:from>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>/.exec(block);
+    const toRowM = /<xdr:to>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>/.exec(block);
+    const embedM = /<a:blip\b[^>]*\br:embed="([^"]+)"/.exec(block);
+    if (!fromRowM || !embedM) continue;
+    const target = ridMap[embedM[1]];
+    const f = target ? files.get(target) : null;
+    if (!f) continue;
+    let buffer;
+    try { buffer = f.method === 0 ? f.raw : zlib.inflateRawSync(f.raw); } catch { continue; }
+    const extM = /\.([A-Za-z0-9]+)$/.exec(target);
+    let ext = extM ? extM[1].toLowerCase() : "jpg";
+    if (ext === "jpeg") ext = "jpg";
+    const descrM = /<xdr:cNvPr\b[^>]*\bdescr="([^"]*)"/.exec(block);
+    const nameM = descrM || /<xdr:cNvPr\b[^>]*\bname="([^"]*)"/.exec(block);
+    const fromRow = Number(fromRowM[1]);
+    const toRow = toRowM ? Number(toRowM[1]) : fromRow;
+    out.push({
+      row: Math.round((fromRow + toRow) / 2),   // 0 基，取纵向中心所在行
+      rowFrom: fromRow,
+      rowTo: toRow,
+      buffer,
+      ext,
+      name: nameM ? unescapeXml(nameM[1]) : "",
+    });
+  }
+  return out;
+}
+
 /* ---------------- 主入口 ---------------- */
 
 /**
@@ -310,7 +392,9 @@ function readXlsx(buf, opt = {}) {
     // 统一补齐到最大列数
     grid.forEach((r) => { for (let k = r.length; k < maxCol; k += 1) r[k] = ""; });
 
-    sheets.push({ name: sd.name, rows: grid, rowCount: grid.length, colCount: maxCol });
+    // 浮动图片按锚点行归属（DISPIMG 那套走 cellimages.xml；这里是直接插在表上的照片）
+    const sheetImages = opt.images ? readDrawingImages(files, path) : [];
+    sheets.push({ name: sd.name, rows: grid, rowCount: grid.length, colCount: maxCol, path, images: sheetImages });
   });
 
   const mediaFiles = [...files.keys()].filter((n) => n.startsWith("xl/media/") && !n.endsWith("/"));
@@ -327,7 +411,7 @@ function readXlsx(buf, opt = {}) {
   };
 }
 
-module.exports = { readXlsx, unzip, readEntry, readCellImages, refToCell, serialToDate, fmtDate };
+module.exports = { readXlsx, unzip, readEntry, readCellImages, readDrawingImages, refToCell, serialToDate, fmtDate };
 
 /* 允许直接命令行调用：node tools/xlsx-read.js <文件> [sheet序号] */
 if (require.main === module) {
