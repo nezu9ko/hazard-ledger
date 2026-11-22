@@ -245,6 +245,8 @@ function readDrawingImages(files, sheetPath) {
     const block = m[0];
     const fromRowM = /<xdr:from>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>/.exec(block);
     const toRowM = /<xdr:to>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>/.exec(block);
+    const fromColM = /<xdr:from>[\s\S]*?<xdr:col>(\d+)<\/xdr:col>/.exec(block);
+    const toColM = /<xdr:to>[\s\S]*?<xdr:col>(\d+)<\/xdr:col>/.exec(block);
     const embedM = /<a:blip\b[^>]*\br:embed="([^"]+)"/.exec(block);
     if (!fromRowM || !embedM) continue;
     const target = ridMap[embedM[1]];
@@ -259,10 +261,15 @@ function readDrawingImages(files, sheetPath) {
     const nameM = descrM || /<xdr:cNvPr\b[^>]*\bname="([^"]*)"/.exec(block);
     const fromRow = Number(fromRowM[1]);
     const toRow = toRowM ? Number(toRowM[1]) : fromRow;
+    const fromCol = fromColM ? Number(fromColM[1]) : 0;
+    const toCol = toColM ? Number(toColM[1]) : fromCol;
     out.push({
       row: Math.round((fromRow + toRow) / 2),   // 0 基，取纵向中心所在行
+      col: Math.round((fromCol + toCol) / 2),   // 0 基，取横向中心所在列（用来区分「整改前/整改后」）
       rowFrom: fromRow,
       rowTo: toRow,
+      colFrom: fromCol,
+      colTo: toCol,
       buffer,
       ext,
       name: nameM ? unescapeXml(nameM[1]) : "",

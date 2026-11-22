@@ -279,6 +279,45 @@ function parseHazardWorkbook(buf, opts) {
     if (stillMissing.length) notes.push(`⚠️ 这些字段在所有表里都找不到，需要导入后手工补：${stillMissing.join("、")}`);
   }
 
+  // ③ 销号申请单里的「整改后图片」
+  //    主表的图片列通常只放整改前的照片；整改后的对比照在《销号申请表》里。
+  //    按「隐患描述」把销号单的行对回主表记录（同一份文件里两边描述是一致的）。
+  const afterByDesc = (() => {
+    const sheet = book.sheets.find((s) => {
+      const hr = findHeaderRow(s.rows);
+      if (hr < 0) return false;
+      return (s.rows[hr] || []).map(norm).some((c) => c.includes("整改后图片") || c.includes("整改后照片"));
+    });
+    if (!sheet || !(sheet.images || []).length) return {};
+    const hr = findHeaderRow(sheet.rows);
+    const hdr = (sheet.rows[hr] || []).map(norm);
+    const afterCol = hdr.findIndex((c) => c.includes("整改后图片") || c.includes("整改后照片"));
+    if (afterCol < 0) return {};
+    const descCol = mapColumns(sheet.rows[hr])[KEY_FIELD];
+    if (descCol === undefined) return {};
+
+    // 按「起点列」判断前后：销号单里整改前从第 11 列起、整改后从第 12 列起，
+    //   图会跨列，看中心列会误判。
+    // 按「起点行」归属到数据行（rowFrom），中心行在跨行时会落到相邻行上。
+    const byRow = {};
+    sheet.images.forEach((im) => {
+      if (im.colFrom < afterCol) return;
+      (byRow[im.rowFrom] = byRow[im.rowFrom] || []).push(im);
+    });
+
+    const out = {};
+    for (let r = hr + 1; r < sheet.rowCount; r += 1) {
+      const row = sheet.rows[r] || [];
+      const desc = String(row[descCol] || "").trim();
+      if (!desc) continue;
+      const imgs = byRow[r] || [];
+      if (imgs.length) out[desc] = imgs;
+    }
+    const n = Object.values(out).reduce((acc, a) => acc + a.length, 0);
+    if (n) notes.push(`「${sheet.name}」里有 ${n} 张整改后照片，已按隐患描述对应到记录。`);
+    return out;
+  })();
+
   // ③ 逐行映射
   const items = [];
   primary.dataRows.forEach((r) => {
@@ -358,11 +397,20 @@ function parseHazardWorkbook(buf, opts) {
       problems.push(`有 ${lost} 张图片在文件里找不到对应数据`);
     }
 
+    // 整改后照片（来自销号申请单）
+    const rectifyPhotoIds = [];
+    (afterByDesc[description] || []).forEach((im, k) => {
+      const id = `__after_${r}_${k}`;
+      book.images[id] = { id, name: im.name || "", ext: im.ext, size: im.buffer.length, buffer: im.buffer };
+      rectifyPhotoIds.push(id);
+    });
+
     items.push({
       rowNo: r + 1,
       sourceSheet: primary.sheet.name,
       photoIds,
       photos,
+      rectifyPhotoIds,
       hazardCode: raw("hazardCode"),
       inspectDate,
       inspector: raw("inspector") || "未填写",
