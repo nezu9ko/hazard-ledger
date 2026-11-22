@@ -2032,42 +2032,150 @@ function renderHazardNew() {
  *   已闭环 → 显示闭环信息
  * 右上角「打印」可输出 A4 纵向的《隐患详情单》。
  */
-/** 修改某条隐患的排查人员（管理员）。可多选，值用「、」连接后存进 inspector 文本字段。 */
-async function openInspectorEditor(h) {
-  let items = [];
-  try {
-    const r = await api.get("/user-options");
-    items = r.items || [];
-    if (Array.isArray(r.departments) && r.departments.length) DEPARTMENTS = r.departments;
-  } catch (err) {
-    toast("加载人员列表失败", err.message, "err");
+/* ---------- 详情页「点击即编辑」（仅管理员） ----------
+ * 基本 / 整改 / 复查三块的所有字段都能点开就地改，不弹窗、不跳页。
+ * 已闭环的记录同样可改 —— 导入的历史数据经常缺字段或填错，管理员兜底要能修。
+ */
+const INLINE_FIELDS = {
+  inspectDate: { type: "date" },
+  inspector: { type: "person", multi: true },
+  location: { type: "text" },
+  description: { type: "textarea" },
+  category: { type: "select", map: () => CATEGORY_LABELS },
+  level: { type: "select", map: () => LEVEL_LABELS },
+  createdAt: { type: "datetime" },
+  rectifyMeasure: { type: "textarea" },
+  rectifyPerson: { type: "person" },
+  rectifyFund: { type: "number" },
+  planDeadline: { type: "date" },
+  emergencyPlan: { type: "textarea" },
+  reviewer: { type: "person" },
+  reviewDate: { type: "date" },
+  reviewResult: { type: "textarea" },
+  actualCompleteDate: { type: "date" },
+  closedAt: { type: "datetime" },
+  status: { type: "select", map: () => STATUS_LABELS },
+};
+
+/** ISO 时间 → datetime-local 需要的 "YYYY-MM-DDTHH:mm" */
+function toLocalInput(v) {
+  if (!v) return "";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function bindInlineEdit(h) {
+  document.querySelectorAll("[data-edit-field]").forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      if (el.dataset.editing === "1") return;
+      const field = el.dataset.editField;
+      const def = INLINE_FIELDS[field];
+      if (def) openInlineEditor(el, field, def, h);
+    };
+  });
+}
+
+async function openInlineEditor(el, field, def, h) {
+  const oldHtml = el.innerHTML;
+  const cur = el.dataset.editValue || "";
+  el.dataset.editing = "1";
+  el.classList.add("is-editing");
+
+  const restore = () => {
+    delete el.dataset.editing;
+    el.classList.remove("is-editing");
+    el.innerHTML = oldHtml;
+  };
+
+  const commit = async (value, extra) => {
+    const body = Object.assign({}, extra || {});
+    body[field] = value;
+    try {
+      await api.patch(`/hazards/${h.id}`, body);
+      toast("已保存");
+      router();
+    } catch (err) {
+      toast("保存失败", err.message, "err");
+      restore();
+    }
+  };
+
+  // ---- 人员字段：就地放一个 picker，选完点保存 ----
+  if (def.type === "person") {
+    el.innerHTML = `<span style="color:#9ca3af;font-size:13px">加载人员…</span>`;
+    let items = [];
+    try {
+      const r = await api.get("/user-options");
+      items = r.items || [];
+      if (Array.isArray(r.departments) && r.departments.length) DEPARTMENTS = r.departments;
+    } catch (err) {
+      toast("加载人员失败", err.message, "err");
+      restore();
+      return;
+    }
+    el.innerHTML = `<div class="inline-edit">
+      ${pickerHtml("__inlinePerson", "请选择")}
+      <button type="button" class="btn btn-primary btn-sm" data-inline-ok>保存</button>
+      <button type="button" class="btn btn-outline btn-sm" data-inline-cancel>取消</button>
+    </div>`;
+    fillUserPicker($("#__inlinePerson", el), items, {
+      valueKey: "name",
+      multi: !!def.multi,
+      placeholder: def.multi ? "可多选" : "请选择",
+      value: cur, name: cur,
+    });
+    $("[data-inline-cancel]", el).onclick = (e) => { e.stopPropagation(); restore(); };
+    $("[data-inline-ok]", el).onclick = async (e) => {
+      e.stopPropagation();
+      const nm = pickerName("#__inlinePerson");
+      if (!nm) { toast("请选择人员", "", "err"); return; }
+      // 单选字段要同时把账号 id 带上，否则只改了名字、权限还挂在旧账号上
+      const extra = {};
+      if (!def.multi) {
+        const u = items.find((x) => x.userName === nm);
+        if (field === "rectifyPerson") extra.rectifyUserId = u ? u.id : null;
+        if (field === "reviewer") extra.reviewerUserId = u ? u.id : null;
+      }
+      await commit(nm, extra);
+    };
     return;
   }
-  const ov = openModal({
-    title: "修改排查人员",
-    desc: `${h.hazardCode}　${h.location}　·　可多选；系统里没有的人名会归到「名单外人员」，仍可保留`,
-    bodyHtml: `<div class="field"><label>排查人员</label>${pickerHtml("inspectorEdit", "请选择排查人员（可多选）")}</div>`,
-    confirmText: "保存",
-    onConfirm: async () => {
-      const name = pickerName("#inspectorEdit");
-      if (!name) { toast("至少选一位排查人员", "", "err"); return false; }
-      try {
-        await api.patch(`/hazards/${h.id}`, { inspector: name });
-        toast("已更新排查人员", name);
-        router();
-      } catch (err) {
-        toast("保存失败", err.message, "err");
-        return false;
-      }
-    },
-  });
-  fillUserPicker($("#inspectorEdit", ov), items, {
-    valueKey: "name",
-    multi: true,
-    placeholder: "请选择排查人员（可多选）",
-    value: h.inspector || "",
-    name: h.inspector || "",
-  });
+
+  // ---- 其他字段：普通输入控件 ----
+  const map = def.map ? def.map() : null;
+  let inputHtml;
+  if (def.type === "textarea") inputHtml = `<textarea class="inline-input" rows="3">${esc(cur)}</textarea>`;
+  else if (def.type === "select") inputHtml = `<select class="inline-input">${Object.entries(map).map(([v, l]) => `<option value="${v}"${v === cur ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  else if (def.type === "date") inputHtml = `<input type="date" class="inline-input" value="${esc(cur)}">`;
+  else if (def.type === "datetime") inputHtml = `<input type="datetime-local" class="inline-input" value="${toLocalInput(cur)}">`;
+  else if (def.type === "number") inputHtml = `<input type="number" step="0.01" min="0" class="inline-input" value="${esc(cur)}">`;
+  else inputHtml = `<input type="text" class="inline-input" value="${esc(cur)}">`;
+
+  el.innerHTML = `<div class="inline-edit">${inputHtml}
+    <button type="button" class="btn btn-primary btn-sm" data-inline-ok>保存</button>
+    <button type="button" class="btn btn-outline btn-sm" data-inline-cancel>取消</button>
+  </div>`;
+  const inp = $(".inline-input", el);
+  if (inp) { inp.focus(); if (inp.select && def.type !== "date" && def.type !== "datetime") inp.select(); }
+
+  $("[data-inline-cancel]", el).onclick = (e) => { e.stopPropagation(); restore(); };
+  $("[data-inline-ok]", el).onclick = async (e) => {
+    e.stopPropagation();
+    let v = inp.value;
+    if (def.type === "number") v = Number(v);
+    else if (def.type === "datetime") {
+      if (!v) { toast("请选择时间", "", "err"); return; }
+      v = new Date(v).toISOString();
+    }
+    await commit(v);
+  };
+  inp.onkeydown = (e) => {
+    if (e.key === "Enter" && def.type !== "textarea") { e.preventDefault(); $("[data-inline-ok]", el).click(); }
+    if (e.key === "Escape") { e.preventDefault(); restore(); }
+  };
 }
 
 async function renderHazardDetail(id) {
@@ -2081,7 +2189,21 @@ async function renderHazardDetail(id) {
     return;
   }
 
-  const infoRow = (label, value) => `<div class="info-item"><div class="i-label">${esc(label)}</div><div class="i-value">${esc(value) || "—"}</div></div>`;
+  /**
+   * 字段行。管理员可见时整块可点击编辑（data-edit-field 由统一的点击处理器接管）。
+   * @param {string} label 显示名
+   * @param {*} value      纯文本值（用于回填编辑器）
+   * @param {string} [field] 字段名，给了才可编辑
+   * @param {string} [html]  自定义显示（如等级徽章），不给就用转义后的 value
+   */
+  const infoRow = (label, value, field, html) => {
+    const can = isAdmin() && !!field;
+    const shown = html !== undefined ? html : (esc(value) || "—");
+    return `<div class="info-item"><div class="i-label">${esc(label)}</div>`
+      + `<div class="i-value${can ? " is-editable" : ""}"`
+      + (can ? ` data-edit-field="${field}" data-edit-value="${esc(value == null ? "" : value)}" title="点击编辑"` : "")
+      + `>${shown}</div></div>`;
+  };
     const isClosed = h.status === "closed";
     // 权限按"人"严格区分（其他安全管理员也不行）：
   //   整改信息 → 只有被指定的整改责任人本人（系统管理员可应急代办）
@@ -2117,7 +2239,7 @@ async function renderHazardDetail(id) {
         <div class="page-title">${esc(h.hazardCode)}</div>
       </div>
       <div style="display:flex;align-items:center;gap:12px">
-        <span class="badge st-${h.status}" style="padding:5px 12px">${esc(STATUS_LABELS[h.status])}</span>
+        <span class="badge st-${h.status}${isAdmin() ? " is-editable" : ""}" style="padding:5px 12px"${isAdmin() ? ` data-edit-field="status" data-edit-value="${h.status}" title="点击修改状态"` : ""}>${esc(STATUS_LABELS[h.status])}</span>
         <button class="btn btn-outline" id="btnPrintDetail">${icon("printer")}打印</button>
       </div>
     </div>
@@ -2125,20 +2247,20 @@ async function renderHazardDetail(id) {
     <div class="card card-pad">
       <div class="card-head" style="padding:0 0 14px;border:none;font-size:16px">基本信息</div>
       <div class="info-grid">
-        ${infoRow("排查日期", h.inspectDate)}<div class="info-item"><div class="i-label">排查人员</div><div class="i-value">${esc(h.inspector)}${isAdmin() ? `<button class="btn-link" id="btnEditInspector" style="margin-left:8px">修改</button>` : ""}</div></div>${infoRow("所在部位", h.location)}
-        ${infoRow("隐患类别", CATEGORY_LABELS[h.category] || h.category)}
-        <div class="info-item"><div class="i-label">隐患等级</div><div class="i-value"><span class="badge lv-${h.level}">${esc(LEVEL_LABELS[h.level])}</span></div></div>
-        ${infoRow("登记时间", fmtDateTime(h.createdAt))}
-        <div class="info-item full"><div class="i-label">隐患描述</div><div class="i-value pre">${esc(h.description)}</div></div>
+        ${infoRow("排查日期", h.inspectDate, "inspectDate")}${infoRow("排查人员", h.inspector, "inspector")}${infoRow("所在部位", h.location, "location")}
+        ${infoRow("隐患类别", CATEGORY_LABELS[h.category] || h.category, "category")}
+        ${infoRow("隐患等级", LEVEL_LABELS[h.level], "level", `<span class="badge lv-${h.level}">${esc(LEVEL_LABELS[h.level])}</span>`)}
+        ${infoRow("登记时间", h.createdAt || "", "createdAt", esc(fmtDateTime(h.createdAt)) || "—")}
+        <div class="info-item full"><div class="i-label">隐患描述</div><div class="i-value pre${isAdmin() ? " is-editable" : ""}"${isAdmin() ? ` data-edit-field="description" data-edit-value="${esc(h.description)}" title="点击编辑"` : ""}>${esc(h.description)}</div></div>
         ${photoViewer("隐患照片", h.hazardPhotos, "hazardPhotos")}
       </div>
     </div>
     <div class="card card-pad">
       <div class="card-head" style="padding:0 0 14px;border:none;font-size:16px">整改信息</div>
-      <div class="info-item full" style="margin-bottom:16px"><div class="i-label">整改措施</div><div class="i-value pre">${esc(h.rectifyMeasure)}</div></div>
+      <div class="info-item full" style="margin-bottom:16px"><div class="i-label">整改措施</div><div class="i-value pre${isAdmin() ? " is-editable" : ""}"${isAdmin() ? ` data-edit-field="rectifyMeasure" data-edit-value="${esc(h.rectifyMeasure || "")}" title="点击编辑"` : ""}>${esc(h.rectifyMeasure)}</div></div>
       <div class="info-grid">
-        ${infoRow("整改责任人", h.rectifyPerson)}${infoRow("整改资金（元）", h.rectifyFund)}${infoRow("计划完成时限", h.planDeadline)}
-        <div class="info-item full"><div class="i-label">应急预案</div><div class="i-value pre">${esc(h.emergencyPlan || "无")}</div></div>
+        ${infoRow("整改责任人", h.rectifyPerson, "rectifyPerson")}${infoRow("整改资金（元）", h.rectifyFund, "rectifyFund")}${infoRow("计划完成时限", h.planDeadline, "planDeadline")}
+        <div class="info-item full"><div class="i-label">应急预案</div><div class="i-value pre${isAdmin() ? " is-editable" : ""}"${isAdmin() ? ` data-edit-field="emergencyPlan" data-edit-value="${esc(h.emergencyPlan || "")}" title="点击编辑"` : ""}>${esc(h.emergencyPlan || "无")}</div></div>
         ${photoViewer("整改照片", h.rectifyPhotos, "rectifyPhotos")}
       </div>
     </div>
@@ -2146,9 +2268,9 @@ async function renderHazardDetail(id) {
       <div class="card-head" style="padding:0 0 14px;border:none;font-size:16px">复查信息</div>
       ${isClosed ? `
         <div class="info-grid">
-          ${infoRow("实际完成日期", h.actualCompleteDate)}${infoRow("复查人员", h.reviewer)}${infoRow("复查日期", h.reviewDate)}
-          ${infoRow("闭环时间", fmtDateTime(h.closedAt))}
-          <div class="info-item full"><div class="i-label">复查结果</div><div class="i-value pre">${esc(h.reviewResult)}</div></div>
+          ${infoRow("实际完成日期", h.actualCompleteDate, "actualCompleteDate")}${infoRow("复查人员", h.reviewer, "reviewer")}${infoRow("复查日期", h.reviewDate, "reviewDate")}
+          ${infoRow("闭环时间", h.closedAt || "", "closedAt", esc(fmtDateTime(h.closedAt)) || "—")}
+          <div class="info-item full"><div class="i-label">复查结果</div><div class="i-value pre${isAdmin() ? " is-editable" : ""}"${isAdmin() ? ` data-edit-field="reviewResult" data-edit-value="${esc(h.reviewResult || "")}" title="点击编辑"` : ""}>${esc(h.reviewResult)}</div></div>
         </div>
         <div class="closed-note">${icon("check", 18)}已闭环</div>`
       : h.status === "rectifying" ? `
@@ -2169,8 +2291,8 @@ async function renderHazardDetail(id) {
   $("#backBtn").onclick = () => history.back();
   bindPhotoAdder("hazardPhotos", id);
   bindPhotoAdder("rectifyPhotos", id);
-  // 排查人员可多选，但系统没有「整条编辑」功能；这里单独给管理员一个改的入口
-  if ($("#btnEditInspector")) $("#btnEditInspector").onclick = () => openInspectorEditor(h);
+  // 管理员：基本 / 整改 / 复查三块的所有字段点击即编辑
+  if (isAdmin()) bindInlineEdit(h);
 
   const bpd = $("#btnPrintDetail");
   if (bpd) {
