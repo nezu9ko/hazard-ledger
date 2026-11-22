@@ -42,9 +42,9 @@ const CATEGORY_LABELS = {
 const LEVEL_LABELS = { major: "重大", general: "一般" };
 const STATUS_LABELS = { pending: "待整改", rectifying: "整改中", closed: "已闭环", overdue: "逾期" };
 /* 列表「状态」筛选只有四种口径（不是流程状态，别混）：
- *   已验收 = closed ／ 未验收 = 非 closed ／ 逾期 = 非 closed 且过了计划时限
+ *   已整改 = closed ／ 未整改 = 非 closed ／ 逾期 = 非 closed 且过了计划时限
  * value 沿用后端的 closed / unclosed / overdue，改的只是显示文案 */
-const STATUS_FILTER_LABELS = { closed: "已验收", unclosed: "未验收", overdue: "逾期" };
+const STATUS_FILTER_LABELS = { closed: "已整改", unclosed: "未整改", overdue: "逾期" };
 // 角色只分两类（登记/整改/复查已改为按"人"授权，不再按角色）
 const ROLE_LABELS = { user: "普通用户", admin: "系统管理员" };
 // 部门列表（责任人下拉的一级分组）
@@ -263,9 +263,11 @@ function setPickerValue(input, value, name) {
     text.textContent = show || st.placeholder || "请选择";
     text.classList.toggle("is-placeholder", !show);
   }
-  // 已选中的那项高亮
+  // 已选中的那项高亮（多选时 el.value 是「张三、李四」，要按姓名集合比对）
+  const pickedNames = st.multi ? String(el.dataset.name || "").split("、").filter(Boolean) : null;
   wrap.querySelectorAll(".picker-user").forEach((b) => {
-    b.classList.toggle("is-picked", !!el.value && b.dataset.v === el.value);
+    const on = pickedNames ? pickedNames.includes(b.dataset.name) : (!!el.value && b.dataset.v === el.value);
+    b.classList.toggle("is-picked", on);
   });
 }
 
@@ -317,9 +319,20 @@ function fillUserPicker(input, items, opt = {}) {
   const panel = $(".picker-panel", wrap);
   const valueKey = opt.valueKey || "id";
   const placeholder = opt.placeholder || "请选择";
+  const multi = !!opt.multi;
 
   // ---- 组数据：按部门分桶，并补入"当前指定/本人"这类不在列表里的人 ----
   const list = (items || []).slice();
+  // 多选值里可能有**系统里没有的人名**（外单位参与检查、已调离等）：
+  // 补进「名单外人员」分组，这样它们能显示成已选标签，也能被点掉。
+  //   不补的话，这类名字在界面上"看不见"，用户以为没选上，实际值里还留着。
+  if (opt.multi && opt.name) {
+    String(opt.name).split("、").map((x) => x.trim()).filter(Boolean).forEach((nm) => {
+      if (!list.some((u) => u.userName === nm)) {
+        list.unshift({ id: "", userName: nm, department: "名单外人员" });
+      }
+    });
+  }
   if (opt.current && opt.current.userName && !list.some((u) => u.userName === opt.current.userName)) {
     // 补进来的人自己带了部门就用它；没有则用 currentDept，再兜底"当前指定"
     const dept = opt.current.department || opt.currentDept || "当前指定";
@@ -343,7 +356,7 @@ function fillUserPicker(input, items, opt = {}) {
   const valueToDept = {};
   order.forEach((d) => (byDept[d] || []).forEach((u) => { valueToDept[valOf(u)] = d; }));
 
-  const st = { byDept, order, valOf, valueToDept, placeholder, activeDept: "", valueKey };
+  const st = { byDept, order, valOf, valueToDept, placeholder, activeDept: "", valueKey, multi };
   PICKER_STATE.set(el, st);
 
   // ---- 渲染 ----
@@ -360,12 +373,22 @@ function fillUserPicker(input, items, opt = {}) {
     if (!box) return;
     if (!st.activeDept) { box.innerHTML = `<div class="picker-hint">${icon("chevronLeft", 13)} 点左侧部门查看人员</div>`; return; }
     const arr = byDept[st.activeDept] || [];
+    // 多选时按姓名集合判断高亮（值可能是「张三、李四」），单选时按值比对
+    const pickedNames = String(el.dataset.name || "").split("、").filter(Boolean);
     box.innerHTML = arr.length
-      ? arr.map((u) => `<button type="button" role="option" class="picker-user${valOf(u) === el.value ? " is-picked" : ""}"`
-        + ` data-v="${esc(valOf(u))}" data-name="${esc(u.userName)}">${esc(u.userName)}</button>`).join("")
+      ? arr.map((u) => {
+        const on = st.multi ? pickedNames.includes(u.userName) : valOf(u) === el.value;
+        return `<button type="button" role="option" class="picker-user${on ? " is-picked" : ""}"`
+          + ` data-v="${esc(valOf(u))}" data-name="${esc(u.userName)}">${esc(u.userName)}</button>`;
+      }).join("")
       : `<div class="picker-empty">该部门暂无可选人员</div>`;
   };
-  panel.innerHTML = `<div class="picker-depts"></div><div class="picker-users"></div>`;
+  // 多选时面板底部多一条「完成选择」——否则面板会一直开着挡住弹窗里的保存按钮
+  panel.classList.toggle("is-multi", multi);
+  panel.innerHTML = multi
+    ? `<div class="picker-cols"><div class="picker-depts"></div><div class="picker-users"></div></div>
+       <div class="picker-done"><button type="button" class="btn btn-primary btn-sm" data-picker-done>完成选择</button></div>`
+    : `<div class="picker-depts"></div><div class="picker-users"></div>`;
   st.renderDepts();
   st.renderUsers();
 
@@ -383,10 +406,23 @@ function fillUserPicker(input, items, opt = {}) {
       e.stopPropagation();
       const s2 = curSt();
       if (!s2) return;
+      if (e.target.closest("[data-picker-done]")) { closePicker(wrap); if (btn) btn.focus(); return; }
       const d = e.target.closest(".picker-dept");
       if (d) { s2.activeDept = d.dataset.dept; s2.renderDepts(); s2.renderUsers(); return; }
       const u = e.target.closest(".picker-user");
       if (u) {
+        if (s2.multi) {
+          // 多选：点一下切换选中状态，面板**不关**，方便连续点多人。
+          // 值用「、」连接（与公司表格里多人名的写法一致），存进 data-name 供各处读取。
+          const cur = String(el.dataset.name || "").split("、").filter(Boolean);
+          const nm = u.dataset.name;
+          const i = cur.indexOf(nm);
+          if (i >= 0) cur.splice(i, 1); else cur.push(nm);
+          setPickerValue(el, cur.join("、"), cur.join("、"));
+          s2.renderUsers();
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return;
+        }
         setPickerValue(el, u.dataset.v, u.dataset.name);
         closePicker(wrap);
         if (btn) btn.focus();
@@ -1391,7 +1427,7 @@ async function renderHazardList() {
           <div class="field"><label>隐患等级</label><select class="select" id="fLevel"><option value="">全部</option>${Object.entries(LEVEL_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>
           <div class="field"><label>隐患类别</label><select class="select" id="fCategory"><option value="">全部</option>${Object.entries(CATEGORY_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>
           <div class="field"><label>状态</label><select class="select" id="fStatus"><option value="">全部</option>${Object.entries(STATUS_FILTER_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>
-          <div class="field"><label>部门/单位</label><select class="select" id="fDept"><option value="">全部</option>${DEPARTMENTS.map((d) => `<option value="${d}">${d}</option>`).join("")}</select></div>
+          <div class="field"><label>部门/单位</label><select class="select" id="fDept"><option value="">全部</option>${DEPARTMENTS.map((d) => `<option value="${d}">${d}</option>`).join("")}<option value="__unassigned__">未分配</option></select></div>
           <div class="field"><label>关键词</label><input class="input" id="fKeyword" placeholder="搜索编号/描述/部位"></div>
           <div class="field"><label>开始日期</label><input class="input" type="date" id="fFrom"></div>
           <div class="field"><label>结束日期</label><input class="input" type="date" id="fTo"></div>
@@ -1920,7 +1956,8 @@ function renderHazardNew() {
       // 但排查人员可能就是 admin 本人，所以用 opt.current 把"我"补进去。
       fillUserPicker("#inspector", items, {
         valueKey: "name",
-        placeholder: "请选择排查人员",
+        multi: true,                       // 排查人员可多选，值用「、」连接
+        placeholder: "请选择排查人员（可多选）",
         current: me ? { id: me.id, userName: me.userName, department: me.department } : null,
         currentDept: "当前指定",
         value: me ? me.userName : "",
@@ -1995,6 +2032,44 @@ function renderHazardNew() {
  *   已闭环 → 显示闭环信息
  * 右上角「打印」可输出 A4 纵向的《隐患详情单》。
  */
+/** 修改某条隐患的排查人员（管理员）。可多选，值用「、」连接后存进 inspector 文本字段。 */
+async function openInspectorEditor(h) {
+  let items = [];
+  try {
+    const r = await api.get("/user-options");
+    items = r.items || [];
+    if (Array.isArray(r.departments) && r.departments.length) DEPARTMENTS = r.departments;
+  } catch (err) {
+    toast("加载人员列表失败", err.message, "err");
+    return;
+  }
+  const ov = openModal({
+    title: "修改排查人员",
+    desc: `${h.hazardCode}　${h.location}　·　可多选；系统里没有的人名会归到「名单外人员」，仍可保留`,
+    bodyHtml: `<div class="field"><label>排查人员</label>${pickerHtml("inspectorEdit", "请选择排查人员（可多选）")}</div>`,
+    confirmText: "保存",
+    onConfirm: async () => {
+      const name = pickerName("#inspectorEdit");
+      if (!name) { toast("至少选一位排查人员", "", "err"); return false; }
+      try {
+        await api.patch(`/hazards/${h.id}`, { inspector: name });
+        toast("已更新排查人员", name);
+        router();
+      } catch (err) {
+        toast("保存失败", err.message, "err");
+        return false;
+      }
+    },
+  });
+  fillUserPicker($("#inspectorEdit", ov), items, {
+    valueKey: "name",
+    multi: true,
+    placeholder: "请选择排查人员（可多选）",
+    value: h.inspector || "",
+    name: h.inspector || "",
+  });
+}
+
 async function renderHazardDetail(id) {
   $("#app").innerHTML = layout("hazards", `<div class="loading"><div class="spinner"></div>加载中...</div>`);
   bindLayout();
@@ -2050,7 +2125,7 @@ async function renderHazardDetail(id) {
     <div class="card card-pad">
       <div class="card-head" style="padding:0 0 14px;border:none;font-size:16px">基本信息</div>
       <div class="info-grid">
-        ${infoRow("排查日期", h.inspectDate)}${infoRow("排查人员", h.inspector)}${infoRow("所在部位", h.location)}
+        ${infoRow("排查日期", h.inspectDate)}<div class="info-item"><div class="i-label">排查人员</div><div class="i-value">${esc(h.inspector)}${isAdmin() ? `<button class="btn-link" id="btnEditInspector" style="margin-left:8px">修改</button>` : ""}</div></div>${infoRow("所在部位", h.location)}
         ${infoRow("隐患类别", CATEGORY_LABELS[h.category] || h.category)}
         <div class="info-item"><div class="i-label">隐患等级</div><div class="i-value"><span class="badge lv-${h.level}">${esc(LEVEL_LABELS[h.level])}</span></div></div>
         ${infoRow("登记时间", fmtDateTime(h.createdAt))}
@@ -2094,6 +2169,9 @@ async function renderHazardDetail(id) {
   $("#backBtn").onclick = () => history.back();
   bindPhotoAdder("hazardPhotos", id);
   bindPhotoAdder("rectifyPhotos", id);
+  // 排查人员可多选，但系统没有「整条编辑」功能；这里单独给管理员一个改的入口
+  if ($("#btnEditInspector")) $("#btnEditInspector").onclick = () => openInspectorEditor(h);
+
   const bpd = $("#btnPrintDetail");
   if (bpd) {
     bpd.onclick = () => {
@@ -2265,10 +2343,12 @@ async function loadDepartments() {
 
   // 顺便统计每个部门有多少人，帮助判断能不能删
   const counts = {};
+  let unassigned = 0;
   try {
     const us = await api.get("/users");
     (Array.isArray(us) ? us : us.items || []).forEach((u) => {
       if (u.department) counts[u.department] = (counts[u.department] || 0) + 1;
+      else unassigned += 1;              // 没有部门的归到「未分配」
     });
   } catch { /* 统计不到就不显示人数，不影响增删改 */ }
 
@@ -2278,9 +2358,14 @@ async function loadDepartments() {
       <span class="n">${counts[d] ? counts[d] + " 人" : "暂无人员"}</span>
       <button class="dept-op" data-rename="${esc(d)}" title="改名">${icon("pencil", 13)}</button>
       <button class="dept-op danger" data-del="${esc(d)}" title="删除">${icon("trash", 13)}</button>
-    </span>`).join("")}</div>
+    </span>`).join("")}${`
+    <span class="dept-chip" title="没有部门的用户会自动出现在这里；给他们分配部门后会自动移出，无需手工维护">
+      <b>未分配</b>
+      <span class="n">${unassigned ? unassigned + " 人" : "暂无人员"}</span>
+    </span>`}</div>
     <div style="font-size:12.5px;color:#9ca3af;margin-top:12px">
       共 ${list.length} 个部门。改名会同步更新该部门下所有用户；<strong>还有人挂着的部门不允许删除</strong>。
+      「<strong>未分配</strong>」是虚拟分组：没有部门的人自动归到这里，分配部门后自动移出。
     </div>`;
 
   box.querySelectorAll("[data-rename]").forEach((b) => {

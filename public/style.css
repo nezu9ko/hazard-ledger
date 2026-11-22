@@ -270,6 +270,13 @@ input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; }
   border-radius: 10px; box-shadow: var(--shadow-lg); overflow: hidden;
 }
 .picker-panel[hidden] { display: none; }
+/* 多选模式：面板改为上下结构，底部带「完成选择」按钮。
+   不加这个按钮的话，面板会一直开着，把弹窗里的保存按钮整个盖住点不到。 */
+.picker-panel.is-multi { flex-direction: column; }
+.picker-cols { display: flex; }
+.picker-done { padding: 8px; border-top: 1px solid #f1f5f9; text-align: right; background: #fff; }
+.picker-panel.is-multi .picker-depts,
+.picker-panel.is-multi .picker-users { max-height: 210px; }
 .picker-depts {
   width: 168px; flex: none; max-height: 264px; overflow-y: auto;
   padding: 6px; background: #f8fafc; border-right: 1px solid #f1f5f9;
