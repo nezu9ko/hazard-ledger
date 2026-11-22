@@ -523,10 +523,13 @@ function photoViewer(label, urls, field) {
   // 统一走 attOf()：附件可能是 {u,n} 对象，也可能是旧的纯字符串
   const list = (Array.isArray(urls) ? urls : []).map(attOf).filter((a) => a.u);
   const key = field ? "pv-" + field : "";
+  // 删除按钮只给管理员（普通用户只能看和补，不能删别人传的证据照片）
+  const canDel = !!field && typeof isAdmin === "function" && isAdmin();
+  const delBtn = (u) => (canDel ? `<button type="button" class="photo-del" data-del-url="${esc(u)}" title="删除">×</button>` : "");
   const grid = list.length
     ? `<div class="photo-grid" id="${key}Grid">${list.map((a) => (isImageUrl(a.u)
-      ? `<div class="photo-item"><img src="${esc(a.u)}" alt="" data-preview="${esc(a.u)}"></div>`
-      : `<div class="photo-item doc" data-doc="${esc(a.u)}" title="${esc(a.n || "点击打开")}"><span class="doc-ext">${esc(extOf(a.u).toUpperCase())}</span></div>`
+      ? `<div class="photo-item"><img src="${esc(a.u)}" alt="" data-preview="${esc(a.u)}">${delBtn(a.u)}</div>`
+      : `<div class="photo-item doc" data-doc="${esc(a.u)}" title="${esc(a.n || "点击打开")}"><span class="doc-ext">${esc(extOf(a.u).toUpperCase())}</span>${delBtn(a.u)}</div>`
     )).join("")}</div>`
     : `<div class="photo-grid" id="${key}Grid"></div><span class="photo-none" id="${key}None">暂无附件</span>`;
 
@@ -539,6 +542,39 @@ function photoViewer(label, urls, field) {
 
   return `<div class="info-item full"><div class="i-label">${esc(label)}</div>
     <div class="i-value">${grid}${adder}</div></div>`;
+}
+
+/**
+ * 给某个附件区挂上「删除」：点 × → 确认 → 从数据库的附件数组里移除 → 重渲染。
+ * 仅管理员可用（普通用户的 photoViewer 里根本不会渲染 × 按钮）。
+ */
+function bindPhotoDelete(payloadField, hazardId) {
+  const key = "pv-" + payloadField;
+  const grid = $("#" + key + "Grid");
+  if (!grid) return;
+  grid.querySelectorAll(".photo-del").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const url = btn.dataset.delUrl;
+      openModal({
+        title: "删除附件",
+        desc: "只从这条隐患里移除；物理文件会在「系统维护 → 清理照片」时统一回收。",
+        bodyHtml: `<div style="font-size:13.5px;color:#475569;line-height:1.7">确定删除这个附件？删除后无法在本条记录里恢复。</div>`,
+        confirmText: "删除",
+        danger: true,
+        onConfirm: async () => {
+          try {
+            await api.patch(`/hazards/${hazardId}`, { action: "remove-photo", field: payloadField, url });
+            toast("已删除");
+            router();
+          } catch (err) {
+            toast("删除失败", err.message, "err");
+          }
+        },
+      });
+    };
+  });
 }
 
 /**
@@ -2291,6 +2327,8 @@ async function renderHazardDetail(id) {
   $("#backBtn").onclick = () => history.back();
   bindPhotoAdder("hazardPhotos", id);
   bindPhotoAdder("rectifyPhotos", id);
+  bindPhotoDelete("hazardPhotos", id);
+  bindPhotoDelete("rectifyPhotos", id);
   // 管理员：基本 / 整改 / 复查三块的所有字段点击即编辑
   if (isAdmin()) bindInlineEdit(h);
 
