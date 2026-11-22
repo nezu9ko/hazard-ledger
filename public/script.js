@@ -1291,11 +1291,14 @@ function openImportPreview(file, dataUrl, pv) {
     wide: true,
     desc: `文件：${file.name}　数据表：${pv.file.sheetName}（表头第 ${pv.file.headerRow} 行）`,
     bodyHtml: `
+      ${pv.blocked ? `<div style="margin-bottom:14px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#92400e;font-size:13px;line-height:1.6">
+        <b>有 ${pv.blocked} 条被拦下：</b>表里的整改责任人在系统中没有账号。请先让管理员到「用户管理」建好账号，再重新导入这批数据。
+      </div>` : ""}
       <div class="info-grid cols-4" style="margin-bottom:14px">
         <div class="info-item"><div class="i-label">解析到</div><div class="i-value">${pv.total} 条</div></div>
         <div class="info-item"><div class="i-label">可导入</div><div class="i-value" style="color:#16a34a">${pv.creatable} 条</div></div>
         <div class="info-item"><div class="i-label">重复跳过</div><div class="i-value">${pv.duplicated} 条</div></div>
-        <div class="info-item"><div class="i-label">有问题</div><div class="i-value" style="color:${pv.problematic ? "#d97706" : "#16a34a"}">${pv.problematic} 条</div></div>
+        <div class="info-item"><div class="i-label">有问题</div><div class="i-value" style="color:${(pv.problematic + (pv.blocked || 0)) ? "#d97706" : "#16a34a"}">${pv.problematic + (pv.blocked || 0)} 条</div></div>
         <div class="info-item"><div class="i-label">嵌入图片</div><div class="i-value">${pv.photoTotal || 0} 张</div></div>
       </div>
       ${pv.notes.length ? `<div class="callout-info" style="margin-bottom:14px">
@@ -1334,7 +1337,7 @@ function openImportPreview(file, dataUrl, pv) {
       try {
         const r = await api.post("/import", {
           fileName: file.name, dataUrl, commit: true,
-          options: { reviewer, createMissingUsers: true, newUserDepartment: "安全部" },
+          options: { reviewer, createMissingUsers: isAdmin(), newUserDepartment: currentUser()?.department || "安全部" },
         });
         toast("导入完成", `新增 ${r.created} 条${r.photosSaved ? `（含图片 ${r.photosSaved} 张）` : ""}${r.usersCreated.length ? `，新建用户 ${r.usersCreated.length} 个` : ""}${r.skipped ? `，跳过 ${r.skipped} 条` : ""}`, "ok", 6000);
         if (r.errors && r.errors.length) {
@@ -1378,8 +1381,8 @@ async function renderHazardList() {
         <div style="display:flex;gap:10px">
           <button class="btn btn-outline" id="btnPrint">${icon("printer")}打印</button>
           <button class="btn btn-outline" id="btnExport">${icon("download")}导出表单</button>
-          ${isAdmin() ? `<button class="btn btn-outline" id="btnImport">${icon("upload")}导入台账</button>
-          <input type="file" id="importFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none">` : ""}
+          <button class="btn btn-outline" id="btnImport">${icon("upload")}导入台账</button>
+          <input type="file" id="importFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none">
           <a class="btn btn-primary" href="#/hazards/new">${icon("plus")}新增隐患</a>
         </div>
       </div>
@@ -1414,8 +1417,9 @@ async function renderHazardList() {
   // 导出：点一下弹出格式菜单（三套纸质表单 + 扁平明细），按当前筛选条件导出
   $("#btnExport").onclick = () => openExportMenu($("#btnExport"), () => null);
 
-  // 导入台账（仅管理员）：选文件 → 先预览（不写库）→ 确认后才真正导入
-  if (isAdmin() && $("#btnImport")) {
+  // 导入台账（所有登录用户）：选文件 → 先预览（不写库）→ 确认后才真正导入。
+  // 建号仍限管理员：普通用户导入时若缺责任人账号，后端会拦下该行并提示先找管理员建号。
+  if ($("#btnImport")) {
     const fileInput = $("#importFile");
     $("#btnImport").onclick = () => fileInput.click();
     fileInput.onchange = async () => {
@@ -1428,7 +1432,7 @@ async function renderHazardList() {
       btn.disabled = true; btn.textContent = "读取中...";
       try {
         const dataUrl = await fileToDataUrl(f);
-        const preview = await api.post("/import", { fileName: f.name, dataUrl, commit: false, options: { createMissingUsers: true, newUserDepartment: "安全部" } });
+        const preview = await api.post("/import", { fileName: f.name, dataUrl, commit: false, options: { createMissingUsers: isAdmin(), newUserDepartment: currentUser()?.department || "安全部" } });
         openImportPreview(f, dataUrl, preview);
       } catch (err) {
         toast("读取失败", err.message, "err");
