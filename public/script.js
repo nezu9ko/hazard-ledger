@@ -187,11 +187,15 @@ function initDatePickerUX() {
     const target = e.target;
     if (!(target instanceof Element)) return;
 
-    let input = target.closest('input[type="date"]');
+    // 注意要带上 datetime-local：详情页的「登记时间」「闭环时间」用的是它，
+    //   之前只匹配 type="date"，这两个字段点了根本不弹日历。
+    const DATE_SEL = 'input[type="date"], input[type="datetime-local"]';
+    let input = target.closest(DATE_SEL);
     if (!input) {
       // 点到标签或该格空白处：取其所在格里的日期框
-      const field = target.closest(".field");
-      if (field) input = field.querySelector('input[type="date"]');
+      //   .field 是表单里的格子，.info-item 是详情页「点击即编辑」的格子
+      const field = target.closest(".field, .info-item");
+      if (field) input = field.querySelector(DATE_SEL);
     }
     if (!input || input.disabled || input.readOnly) return;
     if (typeof input.showPicker !== "function") return;   // 老浏览器：保持原生行为
@@ -903,20 +907,27 @@ function lineChart(trend) {
     return `<text x="${px(i)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#9ca3af">${t.month.slice(5)}月</text>`;
   }).join("");
 
-  const line = (key, color, dy) => {
+  const line = (key, color) => {
     const pts = trend.map((t, i) => `${px(i)},${py(t[key])}`).join(" ");
     const dots = trend.map((t, i) => `<circle cx="${px(i)}" cy="${py(t[key])}" r="2.5" fill="${color}"/>`).join("");
-    const nums = trend.map((t, i) => (t[key] > 0
-      ? `<text x="${px(i)}" y="${py(t[key]) + dy}" text-anchor="middle" font-size="10" font-weight="700" fill="${color}">${t[key]}</text>`
-      : "")).join("");
-    return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round"/>${dots}${nums}`;
+    return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round"/>${dots}`;
   };
+
+  // 数值标注单独一层、在两条折线之后画：
+  //   原来数字和折线一起画，两条线交叉时后画的那条会把前一条的数字压住。
+  //   再加上白色描边（paint-order: stroke），即使数字正好落在线上也清晰可读。
+  const nums = (key, color, dy) => trend.map((t, i) => (t[key] > 0
+    ? `<text x="${px(i)}" y="${py(t[key]) + dy}" text-anchor="middle" font-size="10" font-weight="700"`
+      + ` fill="${color}" stroke="#fff" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${t[key]}</text>`
+    : "")).join("");
 
   return `<div class="chart-box">
     <svg viewBox="0 0 ${W} ${H}">
       ${gridLines}
-      ${line("newCount", "#1e40af", -8)}
-      ${line("closedCount", "#16a34a", 15)}
+      ${line("newCount", "#1e40af")}
+      ${line("closedCount", "#16a34a")}
+      ${nums("newCount", "#1e40af", -8)}
+      ${nums("closedCount", "#16a34a", 15)}
       ${xLabels}
     </svg>
     <div class="legend">
