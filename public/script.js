@@ -876,7 +876,9 @@ function hBarChart(data) {
   const max = Math.max(1, ...data.map((d) => d.value));
   const rows = data.map((d) => {
     const w = Math.round((d.value / max) * 100);
-    return `<div style="display:grid;grid-template-columns:82px 1fr 34px;align-items:center;gap:10px;margin-bottom:12px">
+    // 带 key 的才可点（看板传的是类别枚举；别处若只传 label 就退化成纯展示）
+    const go = d.key ? ` class="chart-row-clickable" data-goto-category="${esc(d.key)}" title="点击查看该类别台账"` : "";
+    return `<div${go} style="display:grid;grid-template-columns:82px 1fr 34px;align-items:center;gap:10px;margin-bottom:12px">
       <span style="font-size:12.5px;color:#4b5563;text-align:right">${esc(d.label)}</span>
       <span style="height:16px;background:#f1f5f9;border-radius:4px;overflow:hidden">
         <span style="display:block;height:100%;width:${w}%;background:linear-gradient(90deg,#3b82f6,#1e40af);border-radius:4px;transition:width .4s"></span>
@@ -973,9 +975,12 @@ function closureBarChart(dist) {
   const bars = list.map((d, i) => {
     const y = py(d.count);
     const hgt = padT + ih - y;
-    return `<rect x="${px(i) - bw / 2}" y="${y}" width="${bw}" height="${Math.max(1, hgt)}" rx="3" fill="#ea580c" opacity=".9"/>
+    // 整根柱（含数值与天数标签）包成一个可点组：点柱子直接筛出这批台账
+    return `<g class="chart-bar-clickable" data-goto-days="${d.days}" style="cursor:pointer">
+      <rect x="${px(i) - bw / 2}" y="${y}" width="${bw}" height="${Math.max(1, hgt)}" rx="3" fill="#ea580c" opacity=".9"/>
       <text x="${px(i)}" y="${y - 7}" text-anchor="middle" font-size="11.5" font-weight="700" fill="#c2410c">${d.count}</text>
-      <text x="${px(i)}" y="${padT + ih + 18}" text-anchor="middle" font-size="11" fill="#4b5563">${d.days}</text>`;
+      <text x="${px(i)}" y="${padT + ih + 18}" text-anchor="middle" font-size="11" fill="#4b5563">${d.days}</text>
+    </g>`;
   }).join("");
 
   return `<div class="chart-box">
@@ -1103,8 +1108,9 @@ function renderLogin() {
       const res = await api.post("/auth?action=login", { userName, password });
       session = { token: res.token, user: res.user, mustChangePassword: res.mustChangePassword };
       saveSession(session);
-      // 登录后默认进入「个人中心」（可在那里看到自己的待办提醒）
-      location.hash = "#/profile";
+      // 登录后默认进入「统计看板」：先看全局概览；
+      //   个人待办从看板左上角的「个人中心概述」点进去，不再作为默认落地页。
+      location.hash = "#/dashboard";
       mustChangePromptAt = 0;                                       // 新会话，复位引导时间窗
       if (res.mustChangePassword) promptMustChangePassword();
     } catch (err) {
@@ -1167,7 +1173,11 @@ async function renderDashboard() {
   }
 
   const levelData = stats.byLevel.map((d) => ({ label: LEVEL_LABELS[d.level], value: d.count, color: LEVEL_COLORS[d.level] }));
-  const catData = stats.byCategory.map((d) => ({ label: CATEGORY_LABELS[d.category], value: d.count }));
+  // key 用于点击跳转（台账按 category 筛）；label 只负责显示
+  const catData = stats.byCategory.map((d) => ({ key: d.category, label: CATEGORY_LABELS[d.category], value: d.count }));
+  // 个人中心的三块提醒数量（与侧边栏角标、个人中心页同一口径）
+  let rem = { rectify: 0, review: 0, closure: 0 };
+  try { const rd = await api.get("/reminders"); rem = rd.summary || rem; } catch { /* 拉不到就显示 0，不阻塞看板 */ }
   const rateLv = rateLevel(stats.completionRate);
   const ratePct = Math.max(0, Math.min(100, Number(stats.completionRate) || 0));
 
@@ -1211,13 +1221,30 @@ async function renderDashboard() {
       </div>
     </div>
     <div class="grid-2">
+      <div class="card card-flex">
+        <div class="card-head">个人中心概述</div>
+        <div class="card-pad card-pad-center">
+          <div class="my-overview">
+            ${[
+              { k: "rectify", l: "整改提醒", c: "#f59e0b", tip: "我是整改责任人 · 未闭环" },
+              { k: "review", l: "复查提醒", c: "#3b82f6", tip: "状态为整改中 · 待复查闭环" },
+              { k: "closure", l: "闭环提醒", c: "#10b981", tip: "已逾期或 3 天内到期 · 未闭环" },
+            ].map((i) => `
+              <div class="mo-item" data-goto-profile role="button" tabindex="0" title="${esc(i.tip)}　点击进入个人中心">
+                <div class="mo-n" style="color:${i.c}">${rem[i.k] || 0}</div>
+                <div class="mo-l">${i.l}</div>
+              </div>`).join("")}
+          </div>
+          <div class="mo-tip">点击任意一项进入个人中心查看明细</div>
+        </div>
+      </div>
       <div class="card"><div class="card-head">隐患等级分布</div><div class="card-pad">${donutChart(levelData, stats.total)}</div></div>
-      <div class="card"><div class="card-head">隐患类别分布</div><div class="card-pad">${hBarChart(catData)}</div></div>
     </div>
     <div class="grid-2">
+      <div class="card"><div class="card-head">隐患类别分布</div><div class="card-pad">${hBarChart(catData)}</div></div>
       <div class="card"><div class="card-head">闭环时长分布（按耗时天数）</div><div class="card-pad">${closureBarChart(stats.closureDist || [])}</div></div>
-      <div class="card"><div class="card-head">月度趋势（近 12 个月）</div><div class="card-pad">${lineChart(stats.monthlyTrend)}</div></div>
     </div>
+    <div class="card"><div class="card-head">月度趋势（近 12 个月）</div><div class="card-pad">${lineChart(stats.monthlyTrend)}</div></div>
   </div>`;
 
   // 统计卡点击 → 跳转台账并带入筛选条件
@@ -1225,6 +1252,23 @@ async function renderDashboard() {
     const go = () => gotoLedger(el.dataset.goto);
     el.onclick = go;
     el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } };
+  });
+
+  // 个人中心概述 → 个人中心（三块提醒的明细都在那里）
+  document.querySelectorAll("#content [data-goto-profile]").forEach((el) => {
+    const go = () => { location.hash = "#/profile"; };
+    el.onclick = go;
+    el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } };
+  });
+
+  // 类别分布 → 台账按该类别筛选
+  document.querySelectorAll("#content [data-goto-category]").forEach((el) => {
+    el.onclick = () => gotoLedger({ category: el.dataset.gotoCategory });
+  });
+
+  // 闭环时长分布 → 台账按该耗时天数筛选
+  document.querySelectorAll("#content [data-goto-days]").forEach((el) => {
+    el.onclick = () => gotoLedger({ closureDays: el.dataset.gotoDays });
   });
 
   const seedBtn = $("#btnSeed");
@@ -1244,14 +1288,17 @@ async function renderDashboard() {
 }
 
 /* ---------- 台账列表 ---------- */
-const listState = { page: 1, pageSize: 10, level: "", category: "", status: "", department: "", dateFrom: "", dateTo: "", keyword: "" };
+const listState = { page: 1, pageSize: 10, level: "", category: "", status: "", department: "", dateFrom: "", dateTo: "", keyword: "", closureDays: "" };
 
 // 从看板等入口跳转台账，并带入指定筛选
-function gotoLedger(statusFilter) {
+//   filter 可以是字符串（旧的 status 简写）或对象：
+//   { status, category, closureDays } —— 看板的类别柱、时长柱点进来时用对象
+function gotoLedger(filter) {
+  const f = typeof filter === "string" ? { status: filter } : (filter || {});
   Object.assign(listState, {
-    page: 1, level: "", category: "", status: statusFilter || "", department: "",
-    dateFrom: "", dateTo: "", keyword: "",
-  });
+    page: 1, level: "", category: "", status: "", department: "",
+    dateFrom: "", dateTo: "", keyword: "", closureDays: "",
+  }, f);
   if (location.hash === "#/hazards") router();  // 已在台账页 → 强制重新渲染
   else location.hash = "#/hazards";
 }
@@ -1285,7 +1332,7 @@ async function exportHazards(ids, template = "ledger") {
   const qs = new URLSearchParams({ format: "xlsx" });
   if (template) qs.set("template", template);
   if (ids && ids.length) qs.set("ids", ids.join(","));
-  else ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
+  else ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword", "closureDays"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
   const res = await fetch(`/api/export?${qs.toString()}`, {
     headers: {
       Authorization: `Bearer ${session.token}`,
@@ -1557,7 +1604,7 @@ async function loadList() {
   if (!card) return;
   card.innerHTML = `<div class="loading"><div class="spinner"></div>加载中...</div>`;
   const qs = new URLSearchParams({ page: listState.page, pageSize: listState.pageSize });
-  ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
+  ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword", "closureDays"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
 
   let data;
   try { data = await api.get(`/hazards?${qs.toString()}`); }
@@ -1762,7 +1809,7 @@ const PRINT_CSS = `
 async function printForm(template) {
   const qs = new URLSearchParams({ format: "json" });
   if (template) qs.set("template", template);
-  ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
+  ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword", "closureDays"].forEach((k) => { if (listState[k]) qs.set(k, listState[k]); });
   const res = await fetch(`/api/export?${qs.toString()}`, {
     headers: {
       Authorization: `Bearer ${session.token}`,
@@ -1840,7 +1887,7 @@ async function fetchAllFiltered() {
   let all = [];
   for (;;) {
     const qs = new URLSearchParams({ page, pageSize });
-    ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword"].forEach((k) => {
+    ["level", "category", "status", "department", "dateFrom", "dateTo", "keyword", "closureDays"].forEach((k) => {
       if (listState[k]) qs.set(k, listState[k]);
     });
     const data = await api.get(`/hazards?${qs.toString()}`);
@@ -1863,6 +1910,10 @@ function filterSummaryText() {
   if (listState.dateFrom) parts.push(`排查日期 ≥ ${listState.dateFrom}`);
   if (listState.dateTo) parts.push(`排查日期 ≤ ${listState.dateTo}`);
   if (listState.keyword) parts.push(`关键词：${listState.keyword}`);
+  // 从看板「闭环时长分布」柱子点进来时带的条件
+  if (listState.closureDays !== "" && listState.closureDays !== undefined) {
+    parts.push(`闭环耗时：${listState.closureDays} 天`);
+  }
   return parts.length ? parts.join("；") : "全部";
 }
 
