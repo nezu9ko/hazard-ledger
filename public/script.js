@@ -1150,6 +1150,11 @@ function renderLogin() {
           mustChangePromptAt = 0;       // 改密完成，复位引导时间窗
           toast("密码修改成功");
           if (session) { session.mustChangePassword = false; saveSession(session); }
+          // 改密成功后主动重渲染当前页。
+          //   否则页面还停在改密前的 403「请先修改初始密码」上：
+          //   登录默认落地页是看板，改密后 hash 仍是 #/dashboard，
+          //   赋同一个 hash 不会触发 hashchange，路由不会重新跑。
+          setTimeout(() => { try { router(); } catch { /* 忽略 */ } }, 60);
       } catch (err) { return fail(err.message); }
     },
   });
