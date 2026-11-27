@@ -1220,28 +1220,25 @@ async function renderDashboard() {
         </div>
       </div>
     </div>
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-head">隐患等级分布</div>
-        <div class="card-pad level-split">
-          <div class="level-split-left">
-            <div class="ls-title">个人中心概述</div>
-            <div class="my-overview">
-              ${[
-                { k: "rectify", l: "整改提醒", c: "#f59e0b", tip: "我是整改责任人 · 未闭环" },
-                { k: "review", l: "复查提醒", c: "#3b82f6", tip: "状态为整改中 · 待复查闭环" },
-                { k: "closure", l: "闭环提醒", c: "#10b981", tip: "已逾期或 3 天内到期 · 未闭环" },
-              ].map((i) => `
-                <div class="mo-item" data-goto-profile role="button" tabindex="0" title="${esc(i.tip)}　点击进入个人中心">
-                  <span class="mo-l">${i.l}</span>
-                  <span class="mo-n" style="color:${i.c}">${rem[i.k] || 0}</span>
-                </div>`).join("")}
-            </div>
-            <div class="mo-tip">点击进入个人中心</div>
+    <div class="dash-row1">
+      <div class="card dash-profile-card" data-goto-profile role="button" tabindex="0" title="点击进入个人中心">
+        <div class="card-head">个人中心</div>
+        <div class="card-pad">
+          <div class="my-overview">
+            ${[
+              { k: "rectify", l: "整改提醒", c: "#f59e0b", tip: "我是整改责任人 · 未闭环" },
+              { k: "review", l: "复查提醒", c: "#3b82f6", tip: "状态为整改中 · 待复查闭环" },
+              { k: "closure", l: "闭环提醒", c: "#10b981", tip: "已逾期或 3 天内到期 · 未闭环" },
+            ].map((i) => `
+              <div class="mo-item" title="${esc(i.tip)}">
+                <span class="mo-l">${i.l}</span>
+                <span class="mo-n" style="color:${i.c}">${rem[i.k] || 0}</span>
+              </div>`).join("")}
           </div>
-          <div class="level-split-right">${donutChart(levelData, stats.total)}</div>
+          <div class="mo-tip">点击进入个人中心</div>
         </div>
       </div>
+      <div class="card"><div class="card-head">隐患等级分布</div><div class="card-pad">${donutChart(levelData, stats.total)}</div></div>
       <div class="card"><div class="card-head">隐患类别分布</div><div class="card-pad">${hBarChart(catData)}</div></div>
     </div>
     <div class="grid-2">
