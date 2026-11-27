@@ -1221,30 +1221,33 @@ async function renderDashboard() {
       </div>
     </div>
     <div class="grid-2">
-      <div class="card card-flex">
-        <div class="card-head">个人中心概述</div>
-        <div class="card-pad card-pad-center">
-          <div class="my-overview">
-            ${[
-              { k: "rectify", l: "整改提醒", c: "#f59e0b", tip: "我是整改责任人 · 未闭环" },
-              { k: "review", l: "复查提醒", c: "#3b82f6", tip: "状态为整改中 · 待复查闭环" },
-              { k: "closure", l: "闭环提醒", c: "#10b981", tip: "已逾期或 3 天内到期 · 未闭环" },
-            ].map((i) => `
-              <div class="mo-item" data-goto-profile role="button" tabindex="0" title="${esc(i.tip)}　点击进入个人中心">
-                <div class="mo-n" style="color:${i.c}">${rem[i.k] || 0}</div>
-                <div class="mo-l">${i.l}</div>
-              </div>`).join("")}
+      <div class="card">
+        <div class="card-head">隐患等级分布</div>
+        <div class="card-pad level-split">
+          <div class="level-split-left">
+            <div class="ls-title">个人中心概述</div>
+            <div class="my-overview">
+              ${[
+                { k: "rectify", l: "整改提醒", c: "#f59e0b", tip: "我是整改责任人 · 未闭环" },
+                { k: "review", l: "复查提醒", c: "#3b82f6", tip: "状态为整改中 · 待复查闭环" },
+                { k: "closure", l: "闭环提醒", c: "#10b981", tip: "已逾期或 3 天内到期 · 未闭环" },
+              ].map((i) => `
+                <div class="mo-item" data-goto-profile role="button" tabindex="0" title="${esc(i.tip)}　点击进入个人中心">
+                  <span class="mo-l">${i.l}</span>
+                  <span class="mo-n" style="color:${i.c}">${rem[i.k] || 0}</span>
+                </div>`).join("")}
+            </div>
+            <div class="mo-tip">点击进入个人中心</div>
           </div>
-          <div class="mo-tip">点击任意一项进入个人中心查看明细</div>
+          <div class="level-split-right">${donutChart(levelData, stats.total)}</div>
         </div>
       </div>
-      <div class="card"><div class="card-head">隐患等级分布</div><div class="card-pad">${donutChart(levelData, stats.total)}</div></div>
+      <div class="card"><div class="card-head">隐患类别分布</div><div class="card-pad">${hBarChart(catData)}</div></div>
     </div>
     <div class="grid-2">
-      <div class="card"><div class="card-head">隐患类别分布</div><div class="card-pad">${hBarChart(catData)}</div></div>
       <div class="card"><div class="card-head">闭环时长分布（按耗时天数）</div><div class="card-pad">${closureBarChart(stats.closureDist || [])}</div></div>
+      <div class="card"><div class="card-head">月度趋势（近 12 个月）</div><div class="card-pad">${lineChart(stats.monthlyTrend)}</div></div>
     </div>
-    <div class="card"><div class="card-head">月度趋势（近 12 个月）</div><div class="card-pad">${lineChart(stats.monthlyTrend)}</div></div>
   </div>`;
 
   // 统计卡点击 → 跳转台账并带入筛选条件
